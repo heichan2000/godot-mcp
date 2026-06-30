@@ -1,0 +1,2 @@
+# Integration tests (M2): run each tool against examples/sample-project with
+# real headless Godot 4.x. See .github/workflows/ci.yml job B.

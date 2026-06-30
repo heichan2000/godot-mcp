@@ -1,0 +1,58 @@
+{
+  "name": "@heichan2000/godot-mcp",
+  "version": "0.0.0",
+  "description": "MCP server that bridges AI agents to the Godot 4 engine over stdio, with a real write→verify feedback loop.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "godot",
+    "godot4",
+    "ai",
+    "agent",
+    "gamedev"
+  ],
+  "license": "MIT",
+  "author": "heichan2000 <cradial2000@gmail.com>",
+  "homepage": "https://github.com/heichan2000/godot-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heichan2000/godot-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/heichan2000/godot-mcp/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "godot-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepare": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "eslint": "^9.5.0",
+    "tsup": "^8.1.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
