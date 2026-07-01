@@ -53,18 +53,22 @@ The existing [`Coding-Solo/godot-mcp`](https://github.com/Coding-Solo/godot-mcp)
 | Strategy | **Parity first**, then improve (milestoned) |
 | Language/runtime | **TypeScript / Node ≥ 20 LTS**, ESM |
 | Transport | **stdio only** |
-| Godot support | **4.x**; UID tools **feature-gated to ≥ 4.4** (detect via `--version`) |
-| Tool architecture | **Registry + zod** from M1 (one descriptor per tool; list + dispatch auto-derived) |
+| MCP SDK | **`@modelcontextprotocol/sdk` v1.x stable** (v2 is alpha — migration is post-1.0); zod pinned to the SDK's peer range |
+| Godot support | **4.x**; UID tools **always listed**, version-checked **at call time** (cached `--version`); return structured "requires ≥ 4.4" error on older runtimes |
+| Tool architecture | **Thin descriptor array + `McpServer.registerTool`** — one plain descriptor object per tool (`{name, description, inputSchema, handler, minGodotVersion?}`); registration is a loop over `server.registerTool()`. **No custom list/dispatch** — the SDK already derives the JSON schema from zod and routes calls |
 | API naming | **Clean-slate `snake_case`** tool + param names; **no** camelCase dual-support |
 | GDScript bridge | **Single versioned dispatcher** (`godot_operations.gd`, `match` on op, JSON params as argv) |
-| FS boundary | **Confine every path to the call's `project_path`** (reject absolute/`../`/symlink escape); centralized helper so an optional allow-list can be added post-1.0 |
+| FS boundary | **Confine every path to the call's `project_path`**. Check = realpath the **deepest existing ancestor** (target may not exist yet), then `path.relative(root, candidate)` must be non-empty, non-absolute, and not start with `..`. **No naive `startsWith`** — it breaks on Windows (case-insensitivity, 8.3 short names, UNC). Centralized helper; optional allow-list post-1.0 |
+| Value encoding | **`var_to_str`/`str_to_var` strings** for non-JSON Godot types in *both* directions (e.g. `"Vector2(100, 50)"`); JSON primitives stay native. One symmetric codec, matches `.tscn` syntax |
+| Asset imports | **Detect + guided error + `import_project` tool (M1)**: asset-dependent ops check for the `.godot` import cache; if missing, return a structured error pointing at `import_project` (runs `godot --headless --import`, may be slow). Never auto-import inside another op |
+| `add_node` type gate | **ClassDB-derived check in `operations.gd`** (`class_exists` && `is_parent_class(type, "Node")` && `can_instantiate`) — covers all built-ins per running version, blocks script-class/`res://` injection, zero list maintenance. No curated list |
 | Godot resolution | **Strict + guided setup**: `config → GODOT_PATH → autodetect`; on failure, structured error w/ candidates + fix steps (no silent fallback) |
 | Process model | **Single active process + polling `get_debug_output` + bounded ring buffer** |
 | 1.0 read-back tools | `get_scene_tree`, `read_node_properties`, `get_script_errors`, `list_resources` |
 | Testing | **Layered**: unit (no Godot) + integration (CI installs headless Godot) |
 | License | **MIT** |
 | 1.0 extras pulled in | **Docs/examples**, **typed config reference**, **sample smoke-test project** |
-| Error format | Structured `{ content, isError, possibleSolutions[] }` (kept from original) |
+| Error format | Structured errors with `possibleSolutions[]` — carried **inside** `content` text / `structuredContent` (MCP results have no custom top-level fields), plus `isError: true` |
 | Logging | **stderr only**, gated by `DEBUG` env (stdout reserved for stdio transport) |
 | Telemetry | **None** |
 | Build | `tsup` (bundle) + copy `godot_operations.gd` into `dist/` |
@@ -75,8 +79,8 @@ The existing [`Coding-Solo/godot-mcp`](https://github.com/Coding-Solo/godot-mcp)
 
 Each milestone is independently shippable. **1.0 = end of M2.**
 
-- **M1 — Parity (clean architecture):** registry+zod, GDScript dispatcher, single-process model, all 14 parity tools, strict Godot resolution, stderr logging, build/packaging skeleton, unit tests for pure layers.
-- **M2 — Hardening + Read-back → release 1.0:** path containment everywhere (TS + `.gd`), node-type allow-list, bounded output buffer, the 4 read-back tools, typed config surface, integration tests in CI, docs/examples + sample project, npm publish.
+- **M1 — Parity (clean architecture):** descriptor array + `registerTool`, GDScript dispatcher, single-process model, the 14 parity tools **+ `import_project`**, strict Godot resolution, stderr logging, build/packaging skeleton, unit tests for pure layers.
+- **M2 — Hardening + Read-back → release 1.0:** path containment everywhere (TS + `.gd`), ClassDB node-type gate, bounded output buffer, the 4 read-back tools, typed config surface, integration tests in CI, docs/examples + sample project, npm publish.
 - **M3 — Expanded scene API (post-1.0):** set/get arbitrary node properties, connect signals, instance sub-scenes, create/edit resources.
 - **M4 — Concurrency + streaming (post-1.0):** `Map<id, process>` named runs, streamed output via MCP notifications, optional startup allow-list (upgrade FS boundary to defense-in-depth).
 
@@ -90,12 +94,13 @@ Agent (Claude Desktop / Cursor / Cline)
         ▼
 ┌─────────────────────────────────────────────┐
 │ Server (server.ts)                           │
-│   StdioServerTransport · MCP SDK (current)   │
-│   registers Registry.list() / dispatch()     │
+│   StdioServerTransport · MCP SDK v1.x        │
+│   McpServer.registerTool() per descriptor    │
 ├─────────────────────────────────────────────┤
-│ Registry (registry.ts)                       │
-│   defineTool({name, description, input(zod), │
-│                handler}) → list + dispatch    │
+│ Descriptors (registry.ts)                    │
+│   ToolDescriptor {name, description,         │
+│     inputSchema(zod), handler,               │
+│     minGodotVersion?} · registerAll() loop   │
 ├─────────────────────────────────────────────┤
 │ Tools (tools/*.ts) — one file group per area │
 │   validate (zod) → call godot layer          │
@@ -112,15 +117,15 @@ Agent (Claude Desktop / Cursor / Cline)
 ### Proposed source layout
 ```
 src/
-├── server.ts                 # MCP wiring only (transport, registry hookup, SIGINT)
-├── registry.ts               # defineTool + register + auto list/dispatch
+├── server.ts                 # MCP wiring only (McpServer, transport, SIGINT)
+├── registry.ts               # ToolDescriptor type + registerAll(server, descriptors)
 ├── config.ts                 # typed, zod-validated config (env + defaults)
 ├── errors.ts                 # createErrorResponse({message, possibleSolutions})
 ├── schemas.ts                # shared zod fragments (project_path, scene_path, ...)
 ├── tools/
 │   ├── editor.ts             # launch_editor, get_godot_version
 │   ├── run.ts                # run_project, get_debug_output, stop_project
-│   ├── project.ts            # list_projects, get_project_info
+│   ├── project.ts            # list_projects, get_project_info, import_project
 │   ├── scene.ts              # create_scene, add_node, load_sprite, save_scene, export_mesh_library
 │   ├── uid.ts                # get_uid, update_project_uids   (gated ≥4.4)
 │   └── readback.ts           # get_scene_tree, read_node_properties, get_script_errors, list_resources
@@ -139,7 +144,7 @@ package.json · tsconfig.json · tsup.config.ts · README.md · LICENSE (MIT)
 ```
 
 ### Key patterns
-- **`defineTool` descriptor:** `{ name, description, input: ZodObject, handler: (args, ctx) => result }`. Registry derives the MCP `inputSchema` from zod and routes `CallTool` by name. Adding a tool = one file, registered once.
+- **Tool descriptor:** `{ name, description, inputSchema: ZodObject, handler: (args, ctx) => result, minGodotVersion? }` — a plain object, unit-testable without a server. `registerAll()` loops the array calling `server.registerTool()`; the **SDK** derives the JSON schema from zod and routes calls. Adding a tool = one descriptor in one file. No hand-rolled list/dispatch.
 - **GDScript invocation (no shell):**
   `execFileAsync(godotPath, ['--headless','--path',project_path,'--script',opsScriptPath, operation, JSON.stringify(params)])`. Params travel as **data**, never interpolated → no injection.
 - **`operations.gd` dispatcher:** version header; `match operation: ...`; `JSON.parse_string(argv)`; each op a small named function; **path containment re-checked inside `.gd`** (defense in depth).
@@ -151,34 +156,37 @@ package.json · tsconfig.json · tsup.config.ts · README.md · LICENSE (MIT)
 
 All names/params `snake_case`. `project_path` is required wherever a project is operated on and anchors path containment. Every file/dir param is validated to resolve **inside `project_path`** (reject absolute, `../`, symlink escape).
 
+**Value encoding (all tools, both directions):** JSON primitives (`bool`/`int`/`float`/`string`) travel natively; every other Godot type travels as its `var_to_str` text form (e.g. `"Vector2(100, 50)"`, `"Color(1, 0, 0, 1)"`), parsed with `str_to_var` on the way in. One symmetric codec; identical to the syntax agents already read in `.tscn` files.
+
 ### 6.1 Parity tools (M1)
 
 | Tool | Inputs | Behavior |
 |---|---|---|
 | `launch_editor` | `project_path` | Open Godot editor GUI for the project. |
-| `run_project` | `project_path`, `scene?` | Run headless (or a specific scene); start capturing output into the ring buffer; replaces any active process. |
+| `run_project` | `project_path`, `scene?`, `headless?` | Run the project (or a specific scene) **windowed by default** (`godot -d`, parity with the original); `headless: true` for log-only runs (CI/agents). Output captured into the ring buffer either way; replaces any active process. |
 | `get_debug_output` | — | Return current `{ output[], errors[] }` from the ring buffer. |
 | `stop_project` | — | Kill the active process; return captured tail; clear `activeProcess`. |
 | `get_godot_version` | — | Return detected Godot version string. |
-| `list_projects` | `directory`, `recursive?` | Find `project.godot` files under `directory` (the call's boundary for this tool). |
+| `list_projects` | `directory`, `recursive?`, `max_depth?` | Find `project.godot` files under `directory` (the call's boundary for this tool). **Depth-capped** (default 3, hard max), skips hidden/system dirs (`.git`, `node_modules`, AppData, …), caps result count — no accidental whole-disk walks. |
 | `get_project_info` | `project_path` | Return name, Godot version, and file/asset counts. |
+| `import_project` | `project_path` | Run `godot --headless --import` to (re)build the asset import cache. May be slow on large projects — asset-dependent ops **never** run it implicitly; they return a guided error pointing here when the cache is missing. |
 | `create_scene` | `project_path`, `scene_path`, `root_node_type?` | Create a `.tscn` with the given root node (default `Node2D`/configurable). |
-| `add_node` | `project_path`, `scene_path`, `node_type`, `node_name`, `parent_node_path?`, `properties?` | Add a node (type **allow-listed**) under parent; apply simple properties. |
-| `load_sprite` | `project_path`, `scene_path`, `node_path`, `texture_path` | Assign a texture to a Sprite2D/3D node. |
+| `add_node` | `project_path`, `scene_path`, `node_type`, `node_name`, `parent_node_path?`, `properties?` | Add a node under parent; `node_type` gated by the **ClassDB check** (§7.2); `properties` values use the shared encoding. |
+| `load_sprite` | `project_path`, `scene_path`, `node_path`, `texture_path` | Assign a texture to a Sprite2D/3D node. Requires the import cache (else guided error → `import_project`). |
 | `export_mesh_library` | `project_path`, `scene_path`, `output_path`, `mesh_item_names?` | Export scene meshes as a `MeshLibrary` `.res`. |
 | `save_scene` | `project_path`, `scene_path`, `new_path?` | Save the scene (optionally as a new path / "save as"). |
 | `get_uid` | `project_path`, `file_path` | **(≥4.4)** Return the resource UID for a file. |
 | `update_project_uids` | `project_path` | **(≥4.4)** Resave resources to refresh UID references. |
 
-UID tools are hidden/disabled and return a clear "requires Godot ≥ 4.4" error on older runtimes.
+UID tools are **always listed** (descriptions state "Requires Godot ≥ 4.4"); the version check happens **at call time** against the cached `--version` result, returning a structured "requires Godot ≥ 4.4" error on older runtimes. No startup probe, no dynamic tool list — startup must succeed even with no Godot installed (guided-error flow).
 
 ### 6.2 Read-back tools (M2 / 1.0)
 
 | Tool | Inputs | Output |
 |---|---|---|
 | `get_scene_tree` | `project_path`, `scene_path` | Nested tree of `{ name, type, path, children[] }`. Verify structure / discover node paths. |
-| `read_node_properties` | `project_path`, `scene_path`, `node_path` | `{ property: value, ... }` for the node. Verify set-property / texture ops took effect. |
-| `get_script_errors` | `project_path`, `scene_path?` \| `script_path?` | `[{ file, line, message }]` parsed from headless parse/compile. Verify generated GDScript is valid. |
+| `read_node_properties` | `project_path`, `scene_path`, `node_path`, `properties?` | Default: only properties **stored in the scene** (the node's non-default state — compact, mirrors the `.tscn`). Optional `properties: string[]` fetches specific named properties regardless of default-ness ("confirm `position` is `(0,0)`"). Values in the shared encoding. |
+| `get_script_errors` | `project_path`, `scene_path?` \| `script_path?` | `{ errors: [{file, line, message}], raw: string }`. Structured entries are **best-effort regex parses** of `--check-only` stderr (Godot exposes no error API); `raw` is always included so a missed parse loses nothing. Regexes are pinned by integration tests per Godot version in the CI matrix, so format drift fails CI instead of silently returning `[]`. |
 | `list_resources` | `project_path`, `type?` | `[{ path (res://), type, uid? }]`. Discover available assets before referencing. |
 
 ### 6.3 Tool descriptor checklist (applies to every tool)
@@ -191,12 +199,13 @@ UID tools are hidden/disabled and return a clear "requires Godot ≥ 4.4" error 
 
 ## 7. Security & Hardening (M2)
 
-1. **Path containment** — `assertInsideRoot(project_path, candidate)`: `path.resolve` then assert `startsWith(root + sep)`; reject absolute inputs, `..`, and symlinks that escape (`realpath` check). Enforced in **both** TS and `operations.gd`.
-2. **Node/class allow-list** — `add_node` restricts `node_type` to a vetted set of Godot built-ins; reject `res://`/script-class injection; never `load()` arbitrary values from properties.
+1. **Path containment** — `assertInsideRoot(project_path, candidate)`: realpath the **deepest existing ancestor** of the candidate (the target itself may not exist yet, e.g. `create_scene`), then require `path.relative(root, candidate)` to be non-empty, non-absolute, and not starting with `..`. **Never** a naive `startsWith` prefix check — it breaks on Windows (case-insensitive paths, 8.3 short names like `C:\PROGRA~1`, UNC paths). Unit tests include explicit Windows cases. Enforced in **both** TS and `operations.gd`.
+2. **Node-type gate (ClassDB-derived)** — `add_node` accepts `node_type` only if, in `operations.gd`: `ClassDB.class_exists(type)` **and** `ClassDB.is_parent_class(type, "Node")` **and** `ClassDB.can_instantiate(type)`. Covers every built-in node in the running Godot version with zero list maintenance; blocks script classes, `res://` injection, and abstract/editor-only classes. Never `load()` arbitrary values from properties (`str_to_var` only — it cannot construct Resources or run code).
+2a. **Bounded `list_projects`** — depth cap (default 3, hard max), skip hidden/system directories, cap result count.
 3. **Strict Godot resolution** — no silent hardcoded fallback; structured guided error on failure (candidate paths + how to set `GODOT_PATH`).
 4. **No shell** — `execFile`/`spawn` with argument arrays only; params to GDScript are JSON data, never interpolated.
 5. **Bounded buffers** — capped output to prevent memory exhaustion from noisy runs.
-6. **Current MCP SDK** — pin to a current, maintained version (not the original's 0.6.0); enable `npm audit` / Dependabot; no unused deps (drop `axios`).
+6. **Current MCP SDK** — pin `@modelcontextprotocol/sdk` **v1.x stable** (v2 is alpha; migrate post-1.0), zod within the SDK's peer range; enable `npm audit` / Dependabot; no unused deps (drop `axios`).
 7. **Least-privilege guidance** in docs (run scoped to a projects dir; never as admin/root).
 
 ---
@@ -217,9 +226,9 @@ Validated `config.ts` (zod), documented in `docs/`:
 
 ## 9. Testing & CI
 
-- **Unit (always, no Godot):** zod schema validation; `assertInsideRoot` (traversal/absolute/symlink cases); registry list+dispatch; config parsing; error formatting.
-- **Integration (CI installs headless Godot 4.x):** run each tool against `examples/sample-project` — e.g. `create_scene` actually writes a valid `.tscn`, `add_node` appears in `get_scene_tree`, `run_project` captures output, `get_script_errors` flags a deliberately broken script, UID tools gated correctly by version.
-- **`.github/workflows/ci.yml`:** job A = lint+typecheck+unit; job B = download Godot, run integration. Matrix across a couple of Godot 4.x versions (incl. one ≥4.4 for UID).
+- **Unit (always, no Godot):** zod schema validation; `assertInsideRoot` (traversal/absolute/symlink cases **+ Windows cases: drive-letter casing, 8.3 short names, UNC, `\` separators**); descriptor registration (every descriptor registers cleanly, names unique); value-codec round-trips; config parsing; error formatting.
+- **Integration (CI installs headless Godot 4.x):** run each tool against `examples/sample-project` — e.g. `create_scene` actually writes a valid `.tscn`, `add_node` appears in `get_scene_tree`, `run_project` (headless) captures output, `get_script_errors` flags a deliberately broken script (pinning the stderr-parse regexes per Godot version), asset-dependent op on a cold project returns the guided import error and succeeds after `import_project`, UID tools gated correctly by version.
+- **`.github/workflows/ci.yml`:** job A = lint+typecheck+unit on **ubuntu-latest + windows-latest** (path containment gets real Windows semantics); job B = download Godot, run integration on **ubuntu × two Godot 4.x versions** (incl. one ≥4.4 for UID) **plus one windows-latest × latest-Godot smoke job**.
 - Coverage gate on the pure layers (schemas, paths, registry, config).
 
 ---
@@ -240,8 +249,9 @@ Validated `config.ts` (zod), documented in `docs/`:
 3. Register locally: `claude mcp add godot -- npx @heichan2000/godot-mcp` (or Cursor `.cursor/mcp.json`).
 4. Manual smoke loop against `examples/sample-project`:
    - `get_godot_version` returns a 4.x version.
-   - `create_scene` → `get_scene_tree` shows the root → `add_node` → `get_scene_tree` shows the new node → `read_node_properties` confirms a set property.
-   - `run_project` then `get_debug_output` shows logs; `stop_project` returns the tail.
+   - `create_scene` → `get_scene_tree` shows the root → `add_node` (with a `"Vector2(...)"` property) → `get_scene_tree` shows the new node → `read_node_properties` returns the same encoded value.
+   - On a cold clone: `load_sprite` returns the guided import error → `import_project` → `load_sprite` succeeds.
+   - `run_project` opens a window (then `headless: true` doesn't); `get_debug_output` shows logs; `stop_project` returns the tail.
    - Feed a `scene_path` of `../../etc/passwd` → rejected with a containment error.
    - Unset `GODOT_PATH` with no Godot installed → strict guided error with candidates.
 5. CI green on a fresh clone (both jobs).
@@ -250,8 +260,13 @@ Validated `config.ts` (zod), documented in `docs/`:
 
 ## 12. Open items / assumptions for `/to-issues`
 - ~~Exact npm scope/package name~~ **RESOLVED:** `@heichan2000/godot-mcp` (verified available 2026-06-30). Remaining action: `npm login` + claim the `heichan2000` npm scope before first publish.
-- Default `root_node_type` and the initial `add_node` allow-list set to be finalized during M1.
+- ~~Initial `add_node` allow-list set~~ **RESOLVED (2026-07-01):** ClassDB-derived check, no curated list (§7.2).
+- Default `root_node_type` to be finalized during M1.
 - Which specific Godot 4.x versions to matrix-test (recommend latest 4.x + one ≥4.4).
 - `tsup` vs `tsc`+copy is a recommendation, not a hard requirement.
+- MCP SDK v2 (`@modelcontextprotocol/server`) migration — revisit post-1.0 once it's stable.
+
+### Second grilling pass (2026-07-01, Fable)
+Resolutions folded into the sections above: descriptor-array-over-`registerTool` (not a custom registry) · `import_project` tool + detect-and-guide for cold asset caches · `get_script_errors` best-effort-parse-plus-raw contract · `var_to_str` value encoding both directions · `read_node_properties` stored-plus-filter scope · Windows-correct path containment (no `startsWith`) · bounded `list_projects` · call-time UID version gate (no dynamic tool list) · ClassDB node-type gate · `run_project` windowed default with `headless?` flag · CI on Windows + Ubuntu · `possibleSolutions` carried inside MCP `content`/`structuredContent`.
 
 _(End PRD)_
