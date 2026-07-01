@@ -26,6 +26,30 @@ function linkDir(target: string, linkPath: string): void {
   symlinkSync(target, linkPath, isWin32 ? "junction" : "dir");
 }
 
+/**
+ * Emits a loud, greppable warning when a mandated coverage case is skipped
+ * because its filesystem prerequisite isn't available on this machine.
+ * Silent skips let real coverage regressions (e.g. hardened images with 8.3
+ * short-name generation or admin shares disabled) go unnoticed - anyone
+ * grepping test output for "[coverage] SKIPPED" will see exactly what
+ * mandated case went unexercised and why.
+ */
+function warnSkippedCoverage(caseName: string, reason: string): void {
+  console.warn(`[coverage] SKIPPED mandated case "${caseName}": ${reason}`);
+}
+
+/**
+ * Converts a local absolute path like `C:\foo\bar` to its UNC spelling via
+ * the loopback administrative share, e.g. `\\localhost\C$\foo\bar`. This
+ * lets tests exercise a *real* UNC path - resolved by the real
+ * `fs.realpathSync.native` - without depending on an actual network share.
+ */
+function toUncPath(localAbsolutePath: string): string {
+  const drive = localAbsolutePath[0]!;
+  const rest = localAbsolutePath.slice(2);
+  return `\\\\localhost\\${drive}$${rest}`;
+}
+
 describe("assertInsideRoot", () => {
   it("accepts a relative path to an existing file inside the root", () => {
     const root = makeRoot();
@@ -171,6 +195,14 @@ describe("assertInsideRoot", () => {
       existsSync(programFilesLong) &&
       existsSync(path.join(programFilesLong, "Common Files"));
 
+    if (isWin32 && !has8dot3Fixture) {
+      warnSkippedCoverage(
+        "resolves an 8.3 short-name root identically to its long form",
+        `"${programFilesShort}" / "${path.join(programFilesLong, "Common Files")}" not found - ` +
+          "8.3 short-name generation is likely disabled on this machine.",
+      );
+    }
+
     it.skipIf(!has8dot3Fixture)(
       "resolves an 8.3 short-name root identically to its long form",
       () => {
@@ -187,10 +219,12 @@ describe("assertInsideRoot", () => {
       ).toThrow(PathContainmentError);
     });
 
-    it.skipIf(!isWin32)("accepts a relative path inside a UNC root", () => {
-      // Real network shares are unreliable in CI/sandboxed environments, so this
-      // uses the injected realpathSync seam to simulate an already-resolved UNC
-      // namespace while still exercising the real relative/absolute logic.
+    it.skipIf(!isWin32)("accepts a relative path inside a UNC root (arithmetic only)", () => {
+      // This does NOT exercise the real default realpathSync - it injects an
+      // identity function to document the relative/absolute path arithmetic
+      // in isolation, independent of any real UNC resolution. The real
+      // default-realpathSync UNC coverage lives in the
+      // "UNC real filesystem containment" describe block below.
       const identity = (candidate: string) => candidate;
 
       const result = assertInsideRoot("\\\\server\\share\\project", "scenes\\main.tscn", {
@@ -200,15 +234,80 @@ describe("assertInsideRoot", () => {
       expect(result).toBe("\\\\server\\share\\project\\scenes\\main.tscn");
     });
 
-    it.skipIf(!isWin32)("rejects a UNC root escape via traversal to a sibling share dir", () => {
-      const identity = (candidate: string) => candidate;
+    it.skipIf(!isWin32)(
+      "rejects a UNC root escape via traversal to a sibling share dir (arithmetic only)",
+      () => {
+        // See note above: identity-injected, arithmetic-only coverage.
+        const identity = (candidate: string) => candidate;
 
-      expect(() =>
-        assertInsideRoot("\\\\server\\share\\project", "..\\..\\share2\\secrets", {
-          realpathSync: identity,
-        }),
-      ).toThrow(PathContainmentError);
-    });
+        expect(() =>
+          assertInsideRoot("\\\\server\\share\\project", "..\\..\\share2\\secrets", {
+            realpathSync: identity,
+          }),
+        ).toThrow(PathContainmentError);
+      },
+    );
+  });
+
+  describe("UNC real filesystem containment (loopback admin share)", () => {
+    // Uses the Windows loopback administrative share (`\\localhost\C$\...`)
+    // to build a UNC spelling of a real temp directory. Unlike the
+    // identity-injected "arithmetic only" cases above, these tests pass NO
+    // `realpathSync` option, so `assertInsideRoot` uses its real default
+    // (`fs.realpathSync.native`) against an actual UNC path - no network
+    // share required, since `localhost` loops back to this machine.
+    const hasUncFixture = (() => {
+      if (!isWin32) return false;
+      try {
+        realpathSync.native(toUncPath(tmpdir()));
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (isWin32 && !hasUncFixture) {
+      warnSkippedCoverage(
+        "UNC root containment resolved by the real default realpathSync",
+        `fs.realpathSync.native could not resolve the loopback admin share ` +
+          `(${toUncPath(tmpdir())}) - it may be disabled or locked down on this machine.`,
+      );
+    }
+
+    it.skipIf(!hasUncFixture)(
+      "accepts a relative path inside a real UNC root, via the real default realpathSync",
+      () => {
+        const parent = makeRoot("godot-mcp-unc-parent-");
+        const root = path.join(parent, "project");
+        mkdirSync(root);
+        mkdirSync(path.join(root, "scenes"));
+        writeFileSync(path.join(root, "scenes", "main.tscn"), "");
+        const uncRoot = toUncPath(root);
+
+        // No injected realpathSync here: this is the real default seam.
+        const result = assertInsideRoot(uncRoot, path.join("scenes", "main.tscn"));
+
+        expect(result).toBe(path.join(realpathSync.native(uncRoot), "scenes", "main.tscn"));
+      },
+    );
+
+    it.skipIf(!hasUncFixture)(
+      "rejects a real UNC root escape via traversal, via the real default realpathSync",
+      () => {
+        const parent = makeRoot("godot-mcp-unc-parent-");
+        const root = path.join(parent, "project");
+        mkdirSync(root);
+        const outside = path.join(parent, "outside");
+        mkdirSync(outside);
+        writeFileSync(path.join(outside, "secret.txt"), "top secret");
+        const uncRoot = toUncPath(root);
+
+        // No injected realpathSync here: this is the real default seam.
+        expect(() => assertInsideRoot(uncRoot, path.join("..", "outside", "secret.txt"))).toThrow(
+          PathContainmentError,
+        );
+      },
+    );
   });
 });
 
