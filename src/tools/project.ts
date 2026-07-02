@@ -1,10 +1,18 @@
+import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { createErrorResponse } from "../errors.js";
 import { hasGodotCacheDir, hasImportCache } from "../godot/cache.js";
+import {
+  DEFAULT_LIST_PROJECTS_MAX_DEPTH,
+  HARD_MAX_LIST_PROJECTS_DEPTH,
+  listProjectDirs,
+  MAX_LIST_PROJECTS_RESULTS,
+  readProjectInfo,
+} from "../godot/discovery.js";
 import { detectGodotPath, godotNotFoundError } from "../godot/paths.js";
 import { runGodotImport, type RunGodotImportResult } from "../godot/runner.js";
 import type { ToolDescriptor } from "../registry.js";
-import { projectPathSchema } from "../schemas.js";
+import { directoryPathSchema, projectPathSchema } from "../schemas.js";
 
 export interface ProjectToolsDeps {
   loadConfig: typeof loadConfig;
@@ -12,6 +20,8 @@ export interface ProjectToolsDeps {
   runGodotImport: typeof runGodotImport;
   hasGodotCacheDir: typeof hasGodotCacheDir;
   hasImportCache: typeof hasImportCache;
+  listProjectDirs: typeof listProjectDirs;
+  readProjectInfo: typeof readProjectInfo;
 }
 
 const defaultDeps: ProjectToolsDeps = {
@@ -20,6 +30,8 @@ const defaultDeps: ProjectToolsDeps = {
   runGodotImport,
   hasGodotCacheDir,
   hasImportCache,
+  listProjectDirs,
+  readProjectInfo,
 };
 
 /**
@@ -113,6 +125,32 @@ const importProjectInputSchema = {
   project_path: projectPathSchema,
 };
 
+const listProjectsInputSchema = {
+  directory: directoryPathSchema,
+  recursive: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether to search subdirectories under directory. Defaults to true. When false, only " +
+        "directory itself is checked for project.godot - no subdirectories are scanned.",
+    ),
+  max_depth: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      `Maximum subdirectory depth to descend when recursive (default ` +
+        `${DEFAULT_LIST_PROJECTS_MAX_DEPTH}). Silently clamped to a hard ceiling of ` +
+        `${HARD_MAX_LIST_PROJECTS_DEPTH} regardless of the value given, to rule out an ` +
+        "effectively unbounded walk - never rejected as an error.",
+    ),
+};
+
+const getProjectInfoInputSchema = {
+  project_path: projectPathSchema,
+};
+
 /**
  * Builds the `tools/project.ts` descriptor group. Godot resolution and the
  * import invocation both happen lazily inside the handler (never at
@@ -150,7 +188,91 @@ export function createProjectTools(deps: ProjectToolsDeps = defaultDeps): ToolDe
     },
   };
 
-  return [importProject as unknown as ToolDescriptor];
+  const listProjects: ToolDescriptor<typeof listProjectsInputSchema> = {
+    name: "list_projects",
+    description:
+      "Finds Godot projects (directories directly containing a project.godot) under directory. " +
+      "A bounded, depth-capped filesystem walk - never a whole-disk search: hidden " +
+      "(dot-prefixed) and known system/dependency directories (.git, node_modules, AppData, " +
+      "the OS recycle bin, ...) are always skipped, and the number of projects returned is " +
+      `capped at ${MAX_LIST_PROJECTS_RESULTS} (structuredContent.truncated is true if more may ` +
+      "exist). Does not invoke Godot - this is a pure filesystem search.",
+    inputSchema: listProjectsInputSchema,
+    handler: async ({ directory, recursive, max_depth }) => {
+      let result;
+      try {
+        result = deps.listProjectDirs(directory, { recursive, maxDepth: max_depth });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return createErrorResponse({
+          message: `Could not read directory "${directory}": ${reason}`,
+          possibleSolutions: [
+            "Confirm directory points at an existing, accessible directory.",
+            "Check filesystem permissions for this path.",
+          ],
+        });
+      }
+
+      const truncatedNote = result.truncated
+        ? ` Result count hit the cap (${MAX_LIST_PROJECTS_RESULTS}); more projects may exist under directory.`
+        : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Found ${result.projects.length} project(s) under "${directory}".${truncatedNote}`,
+          },
+        ],
+        structuredContent: { projects: result.projects, truncated: result.truncated },
+      };
+    },
+  };
+
+  const getProjectInfo: ToolDescriptor<typeof getProjectInfoInputSchema> = {
+    name: "get_project_info",
+    description:
+      "Returns a Godot project's name, engine version (from project.godot's config/features " +
+      "tag), and file/asset counts. project_path must directly contain project.godot - use " +
+      "list_projects to find candidates first if unsure. Does not invoke Godot - this is a pure " +
+      "filesystem read.",
+    inputSchema: getProjectInfoInputSchema,
+    handler: async ({ project_path }) => {
+      const info = deps.readProjectInfo(project_path);
+      if (info === null) {
+        return createErrorResponse({
+          message: `No project.godot found at "${project_path}".`,
+          possibleSolutions: [
+            "Confirm project_path points at the directory that directly contains project.godot.",
+            "Use list_projects to discover Godot projects under a parent directory.",
+          ],
+        });
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Project "${info.name ?? "(unnamed)"}" - Godot ${info.godotVersion ?? "unknown"}, ` +
+              `${info.fileCount} file(s), ${info.assetCount} asset(s).`,
+          },
+        ],
+        structuredContent: {
+          project_path,
+          name: info.name ?? null,
+          godot_version: info.godotVersion ?? null,
+          file_count: info.fileCount,
+          asset_count: info.assetCount,
+        },
+      };
+    },
+  };
+
+  return [
+    importProject as unknown as ToolDescriptor,
+    listProjects as unknown as ToolDescriptor,
+    getProjectInfo as unknown as ToolDescriptor,
+  ];
 }
 
 export const projectTools: ToolDescriptor[] = createProjectTools();

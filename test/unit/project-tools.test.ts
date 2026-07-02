@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createProjectTools } from "../../src/tools/project.js";
 import type { Config } from "../../src/config.js";
+import type { ListProjectsResult, ProjectInfo } from "../../src/godot/discovery.js";
 import type { GodotPathResolution } from "../../src/godot/paths.js";
 import type { runGodotImport, RunGodotImportResult } from "../../src/godot/runner.js";
 
@@ -18,6 +19,8 @@ function makeDeps(overrides: {
   runGodotImport?: typeof runGodotImport;
   hasGodotCacheDirResult?: boolean;
   hasImportCacheResult?: boolean;
+  listProjectDirsResult?: ListProjectsResult;
+  readProjectInfoResult?: ProjectInfo | null;
 }) {
   const resolution: GodotPathResolution = overrides.resolution ?? {
     found: true,
@@ -46,6 +49,13 @@ function makeDeps(overrides: {
       ),
     hasGodotCacheDir: vi.fn(() => overrides.hasGodotCacheDirResult ?? true),
     hasImportCache: vi.fn(() => overrides.hasImportCacheResult ?? true),
+    listProjectDirs: vi.fn(
+      (): ListProjectsResult =>
+        overrides.listProjectDirsResult ?? { projects: [], truncated: false },
+    ),
+    readProjectInfo: vi.fn((): ProjectInfo | null =>
+      overrides.readProjectInfoResult === undefined ? null : overrides.readProjectInfoResult,
+    ),
   };
 }
 
@@ -57,12 +67,14 @@ function getImportProjectTool(deps: ReturnType<typeof makeDeps>) {
 }
 
 describe("createProjectTools", () => {
-  it("exposes the import_project descriptor with just a project_path input", () => {
+  it("exposes import_project, list_projects, and get_project_info descriptors", () => {
     const deps = makeDeps({});
     const tools = createProjectTools(deps);
 
-    expect(tools.map((t) => t.name)).toEqual(["import_project"]);
-    const importProject = tools[0]!;
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      ["get_project_info", "import_project", "list_projects"].sort(),
+    );
+    const importProject = tools.find((t) => t.name === "import_project")!;
     expect(Object.keys(importProject.inputSchema)).toEqual(["project_path"]);
   });
 
@@ -201,5 +213,162 @@ describe("createProjectTools", () => {
     const tool = getImportProjectTool(deps);
 
     expect(tool.description.toLowerCase()).toContain("slow");
+  });
+});
+
+function getListProjectsTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createProjectTools(deps);
+  const tool = tools.find((t) => t.name === "list_projects");
+  if (!tool) throw new Error("list_projects descriptor not found");
+  return tool;
+}
+
+function getGetProjectInfoTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createProjectTools(deps);
+  const tool = tools.find((t) => t.name === "get_project_info");
+  if (!tool) throw new Error("get_project_info descriptor not found");
+  return tool;
+}
+
+describe("list_projects", () => {
+  it("exposes directory, recursive, and max_depth as its input schema", () => {
+    const deps = makeDeps({});
+    const tool = getListProjectsTool(deps);
+
+    expect(Object.keys(tool.inputSchema).sort()).toEqual(
+      ["directory", "max_depth", "recursive"].sort(),
+    );
+  });
+
+  it("calls listProjectDirs with directory, recursive, and max_depth", async () => {
+    const deps = makeDeps({});
+    const tool = getListProjectsTool(deps);
+
+    await tool.handler({ directory: "/projects", recursive: false, max_depth: 2 }, {} as never);
+
+    expect(deps.listProjectDirs).toHaveBeenCalledWith(
+      "/projects",
+      expect.objectContaining({ recursive: false, maxDepth: 2 }),
+    );
+  });
+
+  it("returns the found project paths in structuredContent", async () => {
+    const deps = makeDeps({
+      listProjectDirsResult: { projects: ["/projects/a", "/projects/b"], truncated: false },
+    });
+    const tool = getListProjectsTool(deps);
+
+    const result = await tool.handler({ directory: "/projects" }, {} as never);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      projects: ["/projects/a", "/projects/b"],
+      truncated: false,
+    });
+  });
+
+  it("mentions the cap being hit when the result was truncated", async () => {
+    const deps = makeDeps({
+      listProjectDirsResult: { projects: ["/projects/a"], truncated: true },
+    });
+    const tool = getListProjectsTool(deps);
+
+    const result = await tool.handler({ directory: "/projects" }, {} as never);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ projects: ["/projects/a"], truncated: true });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.toLowerCase()).toContain("cap");
+  });
+
+  it("returns a guided structured error, not a throw, when the search directory cannot be read", async () => {
+    const deps = makeDeps({});
+    deps.listProjectDirs.mockImplementation(() => {
+      const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    });
+    const tool = getListProjectsTool(deps);
+
+    const result = await tool.handler({ directory: "/does/not/exist" }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const structured = result.structuredContent as { possibleSolutions: string[] };
+    expect(structured.possibleSolutions.length).toBeGreaterThan(0);
+  });
+
+  it("never invokes Godot resolution - this is a pure filesystem walk", async () => {
+    const deps = makeDeps({});
+    const tool = getListProjectsTool(deps);
+
+    await tool.handler({ directory: "/projects" }, {} as never);
+
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+  });
+});
+
+describe("get_project_info", () => {
+  it("exposes just a project_path input", () => {
+    const deps = makeDeps({});
+    const tool = getGetProjectInfoTool(deps);
+
+    expect(Object.keys(tool.inputSchema)).toEqual(["project_path"]);
+  });
+
+  it("returns name, godot_version, and counts in structuredContent when the project exists", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      readProjectInfoResult: {
+        name: "Demo",
+        godotVersion: "4.3",
+        configVersion: 5,
+        fileCount: 4,
+        assetCount: 1,
+      },
+    });
+    const tool = getGetProjectInfoTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      project_path: root,
+      name: "Demo",
+      godot_version: "4.3",
+      file_count: 4,
+      asset_count: 1,
+    });
+  });
+
+  it("returns a guided structured error when project.godot is missing at project_path", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ readProjectInfoResult: null });
+    const tool = getGetProjectInfoTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("project.godot");
+    const structured = result.structuredContent as { possibleSolutions: string[] };
+    expect(structured.possibleSolutions.length).toBeGreaterThan(0);
+  });
+
+  it("never invokes Godot resolution - this is a pure filesystem read", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      readProjectInfoResult: {
+        name: "Demo",
+        godotVersion: "4.3",
+        configVersion: 5,
+        fileCount: 1,
+        assetCount: 0,
+      },
+    });
+    const tool = getGetProjectInfoTool(deps);
+
+    await tool.handler({ project_path: root }, {} as never);
+
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
   });
 });

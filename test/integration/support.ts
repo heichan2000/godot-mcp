@@ -13,7 +13,7 @@ export function warnSkippedCoverage(caseName: string, reason: string): void {
   console.warn(`[coverage] SKIPPED mandated case "${caseName}": ${reason}`);
 }
 
-const SAMPLE_PROJECT_DIR = path.join(
+export const SAMPLE_PROJECT_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",

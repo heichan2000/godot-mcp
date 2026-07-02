@@ -35,3 +35,14 @@ export const scenePathSchema = relativePathSchema.describe(
   "Path to a .tscn scene file, relative to project_path. May not exist yet " +
     "when creating a new scene.",
 );
+
+/**
+ * Absolute path to a directory to search for Godot projects under
+ * (`list_projects`). Unlike `projectPathSchema`, this directory is not
+ * required to itself contain a `project.godot` - it is just the search
+ * boundary the bounded walk starts from.
+ */
+export const directoryPathSchema = z
+  .string()
+  .min(1, "directory must not be empty.")
+  .describe("Absolute path to a directory to search for Godot projects (project.godot files).");

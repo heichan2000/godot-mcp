@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { Config } from "../../src/config.js";
 import { hasGodotCacheDir, hasImportCache } from "../../src/godot/cache.js";
+import { listProjectDirs, readProjectInfo } from "../../src/godot/discovery.js";
 import { detectGodotPath } from "../../src/godot/paths.js";
 import {
   resolveOperationsScriptPath,
@@ -88,6 +89,8 @@ function makeProjectTools() {
     runGodotImport,
     hasGodotCacheDir,
     hasImportCache,
+    listProjectDirs,
+    readProjectInfo,
   });
 }
 
