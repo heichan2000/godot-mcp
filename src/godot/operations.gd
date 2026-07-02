@@ -115,15 +115,9 @@ func op_create_scene(params: Dictionary) -> Dictionary:
 	var root_node: Node = ClassDB.instantiate(root_node_type)
 	root_node.name = res_path.get_file().get_basename()
 
-	var packed := PackedScene.new()
-	var pack_err := packed.pack(root_node)
-	root_node.free()
-	if pack_err != OK:
-		return { "ok": false, "error": "Failed to pack scene: error %d" % pack_err }
-
-	var save_err := ResourceSaver.save(packed, res_path)
-	if save_err != OK:
-		return { "ok": false, "error": "Failed to save scene to %s: error %d" % [res_path, save_err] }
+	var packed_outcome := pack_and_save(root_node, res_path)
+	if not packed_outcome["ok"]:
+		return packed_outcome
 
 	return { "ok": true, "result": { "scene_path": res_path, "root_node_type": root_node_type } }
 
@@ -202,15 +196,9 @@ func op_add_node(params: Dictionary) -> Dictionary:
 
 	var new_node_path := str(root.get_path_to(new_node))
 
-	var packed := PackedScene.new()
-	var pack_err := packed.pack(root)
-	root.free()
-	if pack_err != OK:
-		return { "ok": false, "error": "Failed to pack scene: error %d" % pack_err }
-
-	var save_err := ResourceSaver.save(packed, res_path)
-	if save_err != OK:
-		return { "ok": false, "error": "Failed to save scene to %s: error %d" % [res_path, save_err] }
+	var packed_outcome := pack_and_save(root, res_path)
+	if not packed_outcome["ok"]:
+		return packed_outcome
 
 	return {
 		"ok": true,
@@ -261,6 +249,25 @@ func decode_property_value(raw_value: Variant) -> Variant:
 	if decoded == null:
 		return raw_value
 	return decoded
+
+## Packs root into a PackedScene and saves it to res_path, freeing root
+## either way (pack() and free() must happen together regardless of
+## outcome, matching the shape both op_create_scene and op_add_node need).
+## Returns { "ok": true } on success, or { "ok": false, "error": string } on
+## either a pack or a save failure - the same shape every op_* function
+## returns, so callers can return this dictionary directly on failure.
+func pack_and_save(root: Node, res_path: String) -> Dictionary:
+	var packed := PackedScene.new()
+	var pack_err := packed.pack(root)
+	root.free()
+	if pack_err != OK:
+		return { "ok": false, "error": "Failed to pack scene: error %d" % pack_err }
+
+	var save_err := ResourceSaver.save(packed, res_path)
+	if save_err != OK:
+		return { "ok": false, "error": "Failed to save scene to %s: error %d" % [res_path, save_err] }
+
+	return { "ok": true }
 
 func to_res_path(relative_path: String) -> String:
 	if relative_path.begins_with("res://"):

@@ -192,10 +192,13 @@ const addNodeInputSchema = {
   properties: propertiesSchema
     .optional()
     .describe(
-      "Property name -> value to set on the new node via set(). JSON primitives " +
-        "(bool/int/float/string) are used natively; every other Godot type is passed as its " +
-        'var_to_str text form, e.g. {"position": "Vector2(100, 50)", "modulate": ' +
-        '"Color(1, 0, 0, 1)"}. A property that does not exist on node_type is a structured ' +
+      "Property name -> value to set on the new node via set(). String values are parsed with " +
+        'Godot\'s str_to_var, so bare literals like "42", "true", or "[1, 2]" decode to an int, ' +
+        "bool, or Array rather than a literal string; non-primitive types use this same " +
+        'var_to_str text form, e.g. {"position": "Vector2(100, 50)"}. To force a literal ' +
+        'string, quote it var_to_str-style (.tscn\'s own string syntax) - "\\"42\\"" decodes to ' +
+        'the string "42". Plain text that is not a recognized Godot literal (e.g. "hello") ' +
+        "stays a string as-is. A property that does not exist on node_type is a structured " +
         "error.",
     ),
 };
@@ -251,11 +254,13 @@ export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescri
       "class - built-in classes only, never a script class name or a res:// path. " +
       "parent_node_path is relative to the scene root and selects where the new node attaches " +
       "(the scene root itself when omitted); it must already exist in the scene. properties " +
-      "sets values on the new node via set(): JSON primitives (bool/int/float/string) are used " +
-      "natively, while every other Godot type is passed as its var_to_str text form, e.g. " +
-      '{"position": "Vector2(100, 50)", "modulate": "Color(1, 0, 0, 1)", "visible": true} - the ' +
-      "same syntax used inside .tscn files. A property that does not exist on node_type is a " +
-      "structured error, not a silent no-op.",
+      "sets values on the new node via set(): every string value is parsed with Godot's " +
+      'str_to_var, so a bare literal like "42", "true", or "[1, 2]" decodes to an int, bool, or ' +
+      "Array rather than a literal string; non-primitive types use this same var_to_str text " +
+      'form, e.g. {"position": "Vector2(100, 50)", "modulate": "Color(1, 0, 0, 1)", "visible": ' +
+      "true} - the same syntax used inside .tscn files. To force a literal string, quote it " +
+      'var_to_str-style - "\\"42\\"" decodes to the string "42". A property that does not ' +
+      "exist on node_type is a structured error, not a silent no-op.",
     inputSchema: addNodeInputSchema,
     handler: async ({
       project_path,

@@ -18,6 +18,13 @@ describe("value codec (TS side)", () => {
     ["NodePath", 'NodePath("../Foo")'],
     ["plain string (not a var_to_str form)", "hello"],
     ["empty string", ""],
+    // The escape hatch for forcing a literal string when it happens to look
+    // like another Godot literal: quote it var_to_str-style, matching
+    // .tscn's own string syntax. Godot-side, str_to_var('"42"') decodes to
+    // the String "42" rather than the int 42 - see the
+    // operations.gd decode_property_value integration coverage for the
+    // Godot-side half of this round trip.
+    ["quoted var_to_str string form (escape hatch for a literal-looking value)", '"42"'],
   ])("%s encoded string", (_label, encoded) => {
     it("passes propertyValueSchema unchanged", () => {
       expect(propertyValueSchema.parse(encoded)).toBe(encoded);

@@ -119,6 +119,73 @@ describe.skipIf(!hasGodot)("add_node (integration, real headless Godot)", () => 
     expect(verified.property_value_str).toBe("Vector2(100, 50)");
   });
 
+  it("forces a literal string onto a String-typed property via the quoted var_to_str escape hatch", async () => {
+    const { projectPath, scenePath } = await projectWithScene();
+    const tools = makeTools();
+
+    const result = await getTool(tools, "add_node").handler(
+      {
+        project_path: projectPath,
+        scene_path: scenePath,
+        node_type: "Label",
+        node_name: "Score",
+        // A bare "42" would decode via str_to_var to the int 42. Quoting it
+        // var_to_str-style (matching .tscn's own string syntax) is the
+        // documented escape hatch that forces the literal String "42"
+        // instead - see add_node's tool description and the properties
+        // field description in src/tools/scene.ts.
+        properties: { text: '"42"' },
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const verified = await verifyNode(projectPath, "res://scenes/hero.tscn", "Score", "text");
+    expect(verified.ok).toBe(true);
+    expect(verified.node_found).toBe(true);
+    expect(verified.node_class).toBe("Label");
+    // var_to_str of the String "42" is the quoted form `"42"` - this
+    // confirms the saved property is the *string* "42", not the int 42
+    // (which would var_to_str to the bare `42`, no quotes).
+    expect(verified.property_value_str).toBe('"42"');
+  });
+
+  it("pins actual Godot set() coercion behavior when a bare (unquoted) numeric-looking string hits a String-typed property", async () => {
+    const { projectPath, scenePath } = await projectWithScene();
+    const tools = makeTools();
+
+    const result = await getTool(tools, "add_node").handler(
+      {
+        project_path: projectPath,
+        scene_path: scenePath,
+        node_type: "Label",
+        node_name: "Score",
+        // decode_property_value runs this through str_to_var first: "42"
+        // parses as the int 42, not the string "42" - the exact ambiguity
+        // Finding 1 requires documenting at the tool boundary. This test
+        // pins what Godot's Node.set("text", 42) actually does when the
+        // declared property type is String, whatever that behavior is.
+        properties: { text: "42" },
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+
+    const verified = await verifyNode(projectPath, "res://scenes/hero.tscn", "Score", "text");
+    expect(verified.ok).toBe(true);
+    expect(verified.node_found).toBe(true);
+    expect(verified.node_class).toBe("Label");
+    // Godot's set() coerces the int 42 to the String property via its own
+    // Variant conversion rules, landing on the string "42" - so the
+    // *saved* result is indistinguishable from the quoted escape-hatch
+    // form above. This assertion pins that actual coercion behavior; if a
+    // future Godot version changes it, this test will fail loudly rather
+    // than silently drifting.
+    expect(verified.property_value_str).toBe('"42"');
+  });
+
   it("attaches the new node under an explicit parent_node_path", async () => {
     const { projectPath, scenePath } = await projectWithScene();
     const tools = makeTools();

@@ -313,6 +313,20 @@ describe("createSceneTools", () => {
 });
 
 describe("add_node tool", () => {
+  it("discloses the str_to_var decode ambiguity and the quoted-string escape hatch at the tool boundary", () => {
+    const deps = makeDeps({});
+    const tool = getAddNodeTool(deps);
+
+    expect(tool.description).toContain("str_to_var");
+    expect(tool.description).toContain('"\\"42\\""');
+
+    const propertiesDescription = (
+      tool.inputSchema.properties! as unknown as { description?: string }
+    ).description;
+    expect(propertiesDescription).toContain("str_to_var");
+    expect(propertiesDescription).toContain('"\\"42\\""');
+  });
+
   it("calls runOperation with the exact op/params contract, defaulting parent_node_path and properties", async () => {
     const root = makeRoot();
     const deps = makeDeps({
