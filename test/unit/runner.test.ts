@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   DEFAULT_IMPORT_TIMEOUT_MS,
   DEFAULT_OPERATION_TIMEOUT_MS,
@@ -31,9 +32,18 @@ function resultLine(payload: Record<string, unknown>): string {
 
 describe("resolveOperationsScriptPath", () => {
   it("resolves operations.gd next to the given module URL", () => {
-    const moduleUrl = "file:///C:/fake/dist/index.js";
+    // Build the fake module path from a real, platform-native root (via
+    // path.join) rather than a hardcoded POSIX/Windows literal, so this test
+    // behaves the same on ubuntu and windows-latest CI runners.
+    const fakeModulePath = path.join(path.parse(process.cwd()).root, "fake", "dist", "index.js");
+    const moduleUrl = pathToFileURL(fakeModulePath).href;
+
     const result = resolveOperationsScriptPath(moduleUrl);
-    expect(result).toBe(path.join("C:", "fake", "dist", "operations.gd"));
+
+    // Expressed with the same functions production uses (fileURLToPath +
+    // path.dirname + path.join): "operations.gd sits next to the module
+    // file," not a hardcoded literal.
+    expect(result).toBe(path.join(path.dirname(fileURLToPath(moduleUrl)), "operations.gd"));
   });
 
   it("defaults to this module's own directory (src/godot in dev/test)", () => {

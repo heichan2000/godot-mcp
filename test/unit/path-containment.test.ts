@@ -17,8 +17,20 @@ import {
 
 const isWin32 = process.platform === "win32";
 
+/**
+ * Creates a fresh temp root and immediately canonicalizes it through the
+ * same realpath variant `assertInsideRoot` uses by default
+ * (`fs.realpathSync.native`). On some Windows CI runners `os.tmpdir()`
+ * returns an 8.3 short-form path (e.g. `C:\Users\RUNNER~1\...`); only the
+ * native realpath fully expands that to its long form
+ * (`C:\Users\runneradmin\...`). Canonicalizing here - once - means every
+ * expected value derived from `root` below is already in the same form
+ * `assertInsideRoot` returns, instead of each test re-deriving it (and
+ * risking a non-native `realpathSync` call that doesn't expand 8.3 names
+ * the same way).
+ */
 function makeRoot(prefix = "godot-mcp-root-"): string {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+  return realpathSync.native(mkdtempSync(path.join(tmpdir(), prefix)));
 }
 
 /** Directory symlink that does not require elevated privileges on Windows. */
@@ -57,7 +69,7 @@ describe("assertInsideRoot", () => {
 
     const result = assertInsideRoot(root, "scene.tscn");
 
-    expect(result).toBe(path.join(realpathSync(root), "scene.tscn"));
+    expect(result).toBe(path.join(root, "scene.tscn"));
   });
 
   it("accepts a relative path whose target does not exist yet, nested under existing dirs", () => {
@@ -65,7 +77,7 @@ describe("assertInsideRoot", () => {
 
     const result = assertInsideRoot(root, path.join("scenes", "new_scene.tscn"));
 
-    expect(result).toBe(path.join(realpathSync(root), "scenes", "new_scene.tscn"));
+    expect(result).toBe(path.join(root, "scenes", "new_scene.tscn"));
   });
 
   it("rejects the root itself (empty relative path)", () => {
@@ -111,7 +123,7 @@ describe("assertInsideRoot", () => {
 
     const result = assertInsideRoot(root, "..hidden-ish");
 
-    expect(result).toBe(path.join(realpathSync(root), "..hidden-ish"));
+    expect(result).toBe(path.join(root, "..hidden-ish"));
   });
 
   it("throws a root-not-found PathContainmentError when the root does not exist", () => {
@@ -159,7 +171,9 @@ describe("assertInsideRoot", () => {
 
       const result = assertInsideRoot(root, path.join("scenes", "main.tscn"));
 
-      expect(result).toBe(path.join(realpathSync(root), "real-scenes", "main.tscn"));
+      // Expected value is built from the canonicalized root (via makeRoot)
+      // plus the real target dir the "scenes" symlink resolves to.
+      expect(result).toBe(path.join(root, "real-scenes", "main.tscn"));
     });
   });
 
