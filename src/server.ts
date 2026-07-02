@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./godot/runner.js";
 import { registerAll } from "./registry.js";
 import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
+import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
 import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 
 const SERVER_NAME = "godot-mcp";
@@ -13,6 +14,7 @@ export interface CreateServerOptions {
   /** Override tool dependencies (used by tests; production uses real env/fs/exec). */
   editorToolsDeps?: EditorToolsDeps;
   sceneToolsDeps?: SceneToolsDeps;
+  projectToolsDeps?: ProjectToolsDeps;
 }
 
 /**
@@ -25,6 +27,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   const tools = [
     ...createEditorTools(options.editorToolsDeps),
     ...createSceneTools(options.sceneToolsDeps),
+    ...createProjectTools(options.projectToolsDeps),
   ];
   registerAll(server, tools);
   return server;

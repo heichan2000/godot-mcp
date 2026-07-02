@@ -22,6 +22,7 @@ async function connectedClient(resolution: GodotPathResolution) {
         result: {},
       })),
       operationsScriptPath: "/dist/operations.gd",
+      hasImportCache: vi.fn(() => true),
     },
   });
 
