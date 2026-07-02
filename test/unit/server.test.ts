@@ -12,6 +12,17 @@ async function connectedClient(resolution: GodotPathResolution) {
       detectGodotPath: () => resolution,
       execFile: vi.fn(async () => ({ stdout: "4.6.3.stable.official.abcd1234\n", stderr: "" })),
     },
+    sceneToolsDeps: {
+      loadConfig: (): Config => ({ godotPath: undefined, debug: false }),
+      detectGodotPath: () => resolution,
+      runOperation: vi.fn(async () => ({
+        kind: "success" as const,
+        version: 1,
+        operation: "create_scene",
+        result: {},
+      })),
+      operationsScriptPath: "/dist/operations.gd",
+    },
   });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -23,12 +34,13 @@ async function connectedClient(resolution: GodotPathResolution) {
 }
 
 describe("createServer (stdio MCP wiring)", () => {
-  it("lists get_godot_version as a registered tool", async () => {
+  it("lists get_godot_version and create_scene as registered tools", async () => {
     const { client } = await connectedClient({ found: false, candidates: [] });
 
     const { tools } = await client.listTools();
 
     expect(tools.map((t) => t.name)).toContain("get_godot_version");
+    expect(tools.map((t) => t.name)).toContain("create_scene");
   });
 
   it("returns the Godot version over the wire when resolution succeeds", async () => {

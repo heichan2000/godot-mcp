@@ -38,3 +38,35 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  integration:
+    name: integration (ubuntu, real headless Godot)
+    runs-on: ubuntu-latest
+    env:
+      # Pinned to the latest stable 4.x release as of writing. Bump
+      # deliberately when a newer 4.x stable ships.
+      GODOT_VERSION: "4.7-stable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download headless Godot ${{ env.GODOT_VERSION }} (linux x86_64)
+        run: |
+          curl -sL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q godot.zip -d godot-bin
+          chmod +x "godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
+          echo "GODOT_PATH=$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
+
+      - name: Sanity-check the downloaded Godot binary
+        run: "$GODOT_PATH --version"
+
+      - name: Integration tests
+        run: npm run test:integration

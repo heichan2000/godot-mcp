@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
+import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./godot/runner.js";
 import { registerAll } from "./registry.js";
 import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
+import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 
 const SERVER_NAME = "godot-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -10,6 +12,7 @@ const SERVER_VERSION = "0.1.0";
 export interface CreateServerOptions {
   /** Override tool dependencies (used by tests; production uses real env/fs/exec). */
   editorToolsDeps?: EditorToolsDeps;
+  sceneToolsDeps?: SceneToolsDeps;
 }
 
 /**
@@ -19,7 +22,10 @@ export interface CreateServerOptions {
  */
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  const tools = createEditorTools(options.editorToolsDeps);
+  const tools = [
+    ...createEditorTools(options.editorToolsDeps),
+    ...createSceneTools(options.sceneToolsDeps),
+  ];
   registerAll(server, tools);
   return server;
 }
@@ -32,6 +38,19 @@ export async function main(): Promise<void> {
   };
 
   debugLog("starting stdio MCP server");
+
+  // The bundled dispatcher must exist next to the built server code before
+  // we accept any tool calls - a missing operations.gd means the
+  // install/build itself is broken, not a user-fixable env issue, so this
+  // check runs eagerly at startup (unlike Godot executable resolution,
+  // which stays lazy per-call).
+  try {
+    assertOperationsScriptExists(resolveOperationsScriptPath());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[godot-mcp] ${message}`);
+    process.exit(1);
+  }
 
   const server = createServer();
   const transport = new StdioServerTransport();
