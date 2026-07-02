@@ -236,6 +236,49 @@ describe("createSceneTools", () => {
     expect((result.content[0] as { text: string }).text).toContain("ENOENT");
   });
 
+  it("returns a guided timeout error naming the timeout duration for a timeout result", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "timeout", timeoutMs: 60_000 },
+    });
+    const tool = getCreateSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("60000");
+    expect(text.toLowerCase()).toContain("did not respond");
+    expect(text.toLowerCase()).toContain("kill");
+  });
+
+  it("suggests a different scene_path when the dispatcher reports the scene already exists", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "create_scene",
+        error:
+          "Scene already exists at res://scenes/hero.tscn. create_scene refuses to overwrite an existing scene.",
+      },
+    });
+    const tool = getCreateSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("already exists");
+    expect(text.toLowerCase()).toContain("different scene_path");
+  });
+
   it("never writes to stdout while handling a call", async () => {
     const root = makeRoot();
     const deps = makeDeps({});

@@ -14,6 +14,14 @@ const RESULT_MARKER = "GODOT_MCP_RESULT:";
 
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
+/**
+ * Default ceiling on how long a single dispatcher invocation may run before
+ * it's killed. Dispatcher ops are short (a headless boot plus one op), so
+ * 60s is generous; later slices with slower ops (e.g. importing large
+ * assets) can override this per call via `RunOperationOptions.timeoutMs`.
+ */
+export const DEFAULT_OPERATION_TIMEOUT_MS = 60_000;
+
 export interface RunnerExecResult {
   stdout: string;
   stderr: string;
@@ -21,30 +29,47 @@ export interface RunnerExecResult {
   exitCode: number | null;
 }
 
+export interface RunnerExecFileOptions {
+  /** Kills the process (and rejects with a killed/signal-shaped error) if it runs longer than this. */
+  timeoutMs: number;
+}
+
 /**
  * `execFile`-based invocation seam, injected for testing. The default
  * implementation never rejects on a nonzero exit code (the dispatcher exits
  * 1 for ordinary op failures and we still need stdout to read its
  * structured error) - it only rejects when the process could not be spawned
- * at all (e.g. ENOENT).
+ * at all (e.g. ENOENT) or was killed for running past `timeoutMs`.
  */
-export type RunnerExecFile = (file: string, args: string[]) => Promise<RunnerExecResult>;
+export type RunnerExecFile = (
+  file: string,
+  args: string[],
+  options: RunnerExecFileOptions,
+) => Promise<RunnerExecResult>;
 
-const defaultExecFile: RunnerExecFile = (file, args) =>
+const defaultExecFile: RunnerExecFile = (file, args, { timeoutMs }) =>
   new Promise((resolve, reject) => {
-    execFileCb(file, args, { maxBuffer: MAX_BUFFER_BYTES }, (error, stdout, stderr) => {
-      if (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (typeof code !== "number") {
-          // No process ran at all (e.g. ENOENT/EACCES) - a genuine spawn failure.
-          reject(error);
+    execFileCb(
+      file,
+      args,
+      { maxBuffer: MAX_BUFFER_BYTES, timeout: timeoutMs, killSignal: "SIGTERM" },
+      (error, stdout, stderr) => {
+        if (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (typeof code !== "number") {
+            // Either no process ran at all (e.g. ENOENT/EACCES), or Node
+            // killed it for exceeding `timeoutMs` - both leave `code`
+            // non-numeric (null on timeout). `runOperation` distinguishes
+            // the two by checking `killed`/`signal` on the rejected error.
+            reject(error);
+            return;
+          }
+          resolve({ stdout: stdout.toString(), stderr: stderr.toString(), exitCode: code });
           return;
         }
-        resolve({ stdout: stdout.toString(), stderr: stderr.toString(), exitCode: code });
-        return;
-      }
-      resolve({ stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0 });
-    });
+        resolve({ stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0 });
+      },
+    );
   });
 
 export interface RunOperationDeps {
@@ -61,6 +86,8 @@ export interface RunOperationOptions {
   params: Record<string, unknown>;
   /** Dispatcher version this runner call expects; defaults to DISPATCHER_VERSION. Overridable for tests. */
   expectedVersion?: number;
+  /** Kills a hung Godot subprocess after this many ms; defaults to DEFAULT_OPERATION_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 export type RunOperationResult =
@@ -74,7 +101,23 @@ export type RunOperationResult =
       stderr: string;
       exitCode: number | null;
     }
-  | { kind: "spawn-error"; message: string };
+  | { kind: "spawn-error"; message: string }
+  | { kind: "timeout"; timeoutMs: number };
+
+/**
+ * Recognizes the error shape Node's `child_process.execFile` produces when it
+ * kills a process for exceeding the configured `timeout`: `killed: true`
+ * plus a non-empty `signal`. Used to tell a timeout apart from a genuine
+ * spawn failure (e.g. ENOENT), both of which reject with a non-numeric
+ * `error.code`.
+ */
+function isTimeoutError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { killed?: unknown; signal?: unknown };
+  return (
+    candidate.killed === true && typeof candidate.signal === "string" && candidate.signal !== ""
+  );
+}
 
 interface DispatcherResultPayload {
   ok: boolean;
@@ -125,20 +168,28 @@ export async function runOperation(
   deps: RunOperationDeps = defaultDeps,
 ): Promise<RunOperationResult> {
   const expectedVersion = options.expectedVersion ?? DISPATCHER_VERSION;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
 
   let execResult: RunnerExecResult;
   try {
-    execResult = await deps.execFile(options.godotPath, [
-      "--headless",
-      "--path",
-      options.projectPath,
-      "--script",
-      options.operationScriptPath,
-      "--",
-      options.operation,
-      JSON.stringify(options.params),
-    ]);
+    execResult = await deps.execFile(
+      options.godotPath,
+      [
+        "--headless",
+        "--path",
+        options.projectPath,
+        "--script",
+        options.operationScriptPath,
+        "--",
+        options.operation,
+        JSON.stringify(options.params),
+      ],
+      { timeoutMs },
+    );
   } catch (error) {
+    if (isTimeoutError(error)) {
+      return { kind: "timeout", timeoutMs };
+    }
     return {
       kind: "spawn-error",
       message: error instanceof Error ? error.message : String(error),

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import path from "node:path";
 import {
+  DEFAULT_OPERATION_TIMEOUT_MS,
   DISPATCHER_VERSION,
   assertOperationsScriptExists,
   resolveOperationsScriptPath,
@@ -15,6 +16,11 @@ function makeExecFile(
   ) => Promise<{ stdout: string; stderr: string; exitCode: number | null }>,
 ): RunnerExecFile {
   return vi.fn(impl);
+}
+
+/** Shapes an Error the way Node's execFile does when it kills a process for exceeding `timeout`. */
+function makeNodeTimeoutError(signal = "SIGTERM"): Error {
+  return Object.assign(new Error("Command timed out"), { killed: true, signal });
 }
 
 function resultLine(payload: Record<string, unknown>): string {
@@ -69,16 +75,20 @@ describe("runOperation", () => {
 
     await runOperation(baseOptions, { execFile });
 
-    expect(execFile).toHaveBeenCalledWith("/usr/bin/godot", [
-      "--headless",
-      "--path",
-      "/projects/demo",
-      "--script",
-      "/dist/operations.gd",
-      "--",
-      "create_scene",
-      JSON.stringify({ scene_path: "scenes/hero.tscn" }),
-    ]);
+    expect(execFile).toHaveBeenCalledWith(
+      "/usr/bin/godot",
+      [
+        "--headless",
+        "--path",
+        "/projects/demo",
+        "--script",
+        "/dist/operations.gd",
+        "--",
+        "create_scene",
+        JSON.stringify({ scene_path: "scenes/hero.tscn" }),
+      ],
+      { timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS },
+    );
   });
 
   it("returns a success result when the dispatcher reports ok:true at the expected version", async () => {
@@ -205,5 +215,76 @@ describe("runOperation", () => {
     if (result.kind === "spawn-error") {
       expect(result.message).toContain("ENOENT");
     }
+  });
+
+  it("passes the default timeout to execFile when no timeoutMs option is given", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: resultLine({
+        ok: true,
+        version: DISPATCHER_VERSION,
+        operation: "create_scene",
+        result: {},
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    await runOperation(baseOptions, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS,
+    });
+  });
+
+  it("passes a custom timeoutMs through to execFile when provided", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: resultLine({
+        ok: true,
+        version: DISPATCHER_VERSION,
+        operation: "create_scene",
+        result: {},
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    await runOperation({ ...baseOptions, timeoutMs: 5_000 }, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      timeoutMs: 5_000,
+    });
+  });
+
+  it("returns a timeout result (not spawn-error) when execFile rejects with Node's timeout error shape (killed + signal)", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw makeNodeTimeoutError();
+    });
+
+    const result = await runOperation({ ...baseOptions, timeoutMs: 5_000 }, { execFile });
+
+    expect(result).toEqual({ kind: "timeout", timeoutMs: 5_000 });
+  });
+
+  it("uses the default timeout value in a timeout result when timeoutMs was not overridden", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw makeNodeTimeoutError();
+    });
+
+    const result = await runOperation(baseOptions, { execFile });
+
+    expect(result).toEqual({ kind: "timeout", timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS });
+  });
+
+  it("does not treat a killed-but-signal-less rejection as a timeout (falls back to spawn-error)", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw Object.assign(new Error("killed but no signal recorded"), {
+        killed: true,
+        signal: null,
+      });
+    });
+
+    const result = await runOperation(baseOptions, { execFile });
+
+    expect(result.kind).toBe("spawn-error");
   });
 });

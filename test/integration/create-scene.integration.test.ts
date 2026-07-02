@@ -1,5 +1,5 @@
 import { execFile as execFileCb } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -120,6 +120,40 @@ describe.skipIf(!hasGodot)("create_scene (integration, real headless Godot)", ()
 
     expect(result.isError).toBe(true);
     expect(runOperationSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses to overwrite an existing scene: the second create_scene call for the same path fails and the original file is untouched", async () => {
+    const projectPath = freshSampleProject();
+    const tool = getCreateSceneTool(makeTools());
+    const scenePath = path.join("scenes", "hero.tscn");
+    const absoluteScenePath = path.join(projectPath, scenePath);
+
+    const first = await tool.handler(
+      { project_path: projectPath, scene_path: scenePath, root_node_type: "Node2D" },
+      {} as never,
+    );
+    expect(first.isError).toBeFalsy();
+    expect(existsSync(absoluteScenePath)).toBe(true);
+    const originalMtime = statSync(absoluteScenePath).mtimeMs;
+    const originalSize = statSync(absoluteScenePath).size;
+
+    const second = await tool.handler(
+      { project_path: projectPath, scene_path: scenePath, root_node_type: "Node3D" },
+      {} as never,
+    );
+
+    expect(second.isError).toBe(true);
+    const text = (second.content[0] as { text: string }).text;
+    expect(text).toContain("already exists");
+
+    // The original file must be untouched - same size and modification time,
+    // and still loadable as the original root node type (not overwritten
+    // with Node3D from the second, rejected call).
+    expect(statSync(absoluteScenePath).mtimeMs).toBe(originalMtime);
+    expect(statSync(absoluteScenePath).size).toBe(originalSize);
+    const loaded = await loadScene(projectPath, "res://scenes/hero.tscn");
+    expect(loaded.ok).toBe(true);
+    expect(loaded.root_class).toBe("Node2D");
   });
 
   it("produces a structured version-mismatch error naming both versions when the runner's expected version differs from the dispatcher's", async () => {

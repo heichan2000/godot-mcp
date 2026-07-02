@@ -65,7 +65,12 @@ function operationResultToToolResult(result: RunOperationResult) {
     case "operation-error":
       return createErrorResponse({
         message: result.error,
-        possibleSolutions: ["Check that scene_path and root_node_type are valid for this project."],
+        possibleSolutions: /already exists/i.test(result.error)
+          ? [
+              "Choose a different scene_path that does not already exist.",
+              "To overwrite an existing scene, use a dedicated save/overwrite tool once available - create_scene intentionally refuses to overwrite.",
+            ]
+          : ["Check that scene_path and root_node_type are valid for this project."],
       });
     case "version-mismatch":
       return createErrorResponse({
@@ -91,6 +96,18 @@ function operationResultToToolResult(result: RunOperationResult) {
         possibleSolutions: [
           "Confirm GODOT_PATH points at a valid, executable Godot 4.x binary.",
           "Try running the executable manually from a terminal to confirm it works.",
+        ],
+      });
+    case "timeout":
+      return createErrorResponse({
+        message:
+          `Godot did not respond within ${result.timeoutMs}ms and was killed. This usually ` +
+          "means the process hung (e.g. a stuck asset import, a blocking dialog, or a deadlock " +
+          "in headless mode) rather than finishing.",
+        possibleSolutions: [
+          "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
+          "Check for a stuck import (e.g. delete the .godot/imported cache and retry) or other one-time startup cost that may need a longer timeout.",
+          "If this project is unusually large or slow to open, a future call may need a larger timeoutMs than the default.",
         ],
       });
   }

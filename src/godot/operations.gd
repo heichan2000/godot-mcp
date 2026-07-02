@@ -103,6 +103,9 @@ func op_create_scene(params: Dictionary) -> Dictionary:
 		return { "ok": false, "error": "root_node_type is not an instantiable Node class: %s" % root_node_type }
 
 	var res_path := to_res_path(scene_path)
+	if FileAccess.file_exists(res_path):
+		return { "ok": false, "error": "Scene already exists at %s. create_scene refuses to overwrite an existing scene." % res_path }
+
 	var dir_path := res_path.get_base_dir()
 	if not dir_path.is_empty() and not DirAccess.dir_exists_absolute(dir_path):
 		var mkdir_err := DirAccess.make_dir_recursive_absolute(dir_path)
