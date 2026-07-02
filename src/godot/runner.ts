@@ -22,6 +22,15 @@ const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
  */
 export const DEFAULT_OPERATION_TIMEOUT_MS = 60_000;
 
+/**
+ * Default ceiling for `runGodotImport`. `godot --headless --import`
+ * (re)imports every asset that needs it, which can take minutes on a large
+ * project - empirically far longer than a single dispatcher op - so this
+ * gets its own, much larger default, still overridable per call via
+ * `RunGodotImportOptions.timeoutMs`.
+ */
+export const DEFAULT_IMPORT_TIMEOUT_MS = 5 * 60_000;
+
 export interface RunnerExecResult {
   stdout: string;
   stderr: string;
@@ -231,6 +240,73 @@ export async function runOperation(
     version: payload.version,
     operation: payload.operation,
     error: payload.error ?? "Unknown dispatcher error.",
+  };
+}
+
+export interface RunGodotImportOptions {
+  godotPath: string;
+  projectPath: string;
+  /** Kills a hung import after this many ms; defaults to DEFAULT_IMPORT_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
+export type RunGodotImportResult =
+  | {
+      kind: "completed";
+      exitCode: number | null;
+      stdout: string;
+      stderr: string;
+      durationMs: number;
+    }
+  | { kind: "spawn-error"; message: string }
+  | { kind: "timeout"; timeoutMs: number };
+
+/**
+ * Runs `godot --headless --path <project> --import` to (re)build a
+ * project's asset import cache. This is a plain Godot invocation, not a
+ * dispatcher call - there's no `--script operations.gd`, no JSON result
+ * marker, and no version handshake, so it shares only the exec/timeout
+ * seam and error mapping with `runOperation`, not its protocol parsing.
+ *
+ * Deliberately does not itself decide success or failure: Godot's exit
+ * code is not a reliable signal here (empirically, `--import` can exit 0
+ * even when an individual asset fails to import, and in principle the
+ * reverse - a benign nonzero exit on an otherwise-successful run - is a
+ * known Godot quirk). Every non-exec-failure outcome comes back as
+ * `"completed"` with the raw exit code, stdout, and stderr; callers (see
+ * `tools/project.ts`) judge success by checking cache state afterward
+ * (`hasGodotCacheDir`/`hasImportCache` in `./cache.js`) instead.
+ */
+export async function runGodotImport(
+  options: RunGodotImportOptions,
+  deps: RunOperationDeps = defaultDeps,
+): Promise<RunGodotImportResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_IMPORT_TIMEOUT_MS;
+  const startedAt = Date.now();
+
+  let execResult: RunnerExecResult;
+  try {
+    execResult = await deps.execFile(
+      options.godotPath,
+      ["--headless", "--path", options.projectPath, "--import"],
+      { timeoutMs },
+    );
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      return { kind: "timeout", timeoutMs };
+    }
+    return {
+      kind: "spawn-error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
+    kind: "completed",
+    exitCode: execResult.exitCode,
+    stdout: execResult.stdout,
+    stderr: execResult.stderr,
+    durationMs: Date.now() - startedAt,
   };
 }
 

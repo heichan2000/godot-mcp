@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import path from "node:path";
 import {
+  DEFAULT_IMPORT_TIMEOUT_MS,
   DEFAULT_OPERATION_TIMEOUT_MS,
   DISPATCHER_VERSION,
   assertOperationsScriptExists,
   resolveOperationsScriptPath,
+  runGodotImport,
   runOperation,
   type RunnerExecFile,
 } from "../../src/godot/runner.js";
@@ -286,5 +288,104 @@ describe("runOperation", () => {
     const result = await runOperation(baseOptions, { execFile });
 
     expect(result.kind).toBe("spawn-error");
+  });
+});
+
+describe("runGodotImport", () => {
+  const baseOptions = {
+    godotPath: "/usr/bin/godot",
+    projectPath: "/projects/demo",
+  };
+
+  it("invokes execFile with the exact argv contract: headless, path, import - and the larger default import timeout", async () => {
+    const execFile = makeExecFile(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await runGodotImport(baseOptions, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(
+      "/usr/bin/godot",
+      ["--headless", "--path", "/projects/demo", "--import"],
+      { timeoutMs: DEFAULT_IMPORT_TIMEOUT_MS },
+    );
+  });
+
+  it("uses a much larger default timeout than DEFAULT_OPERATION_TIMEOUT_MS", () => {
+    expect(DEFAULT_IMPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_OPERATION_TIMEOUT_MS);
+  });
+
+  it("passes a custom timeoutMs through to execFile when provided", async () => {
+    const execFile = makeExecFile(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await runGodotImport({ ...baseOptions, timeoutMs: 15_000 }, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      timeoutMs: 15_000,
+    });
+  });
+
+  it("returns a completed result with exit code, stdout/stderr, and a measured duration on ordinary completion", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: "reimport log noise",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const result = await runGodotImport(baseOptions, { execFile });
+
+    expect(result.kind).toBe("completed");
+    if (result.kind === "completed") {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("reimport log noise");
+      expect(typeof result.durationMs).toBe("number");
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("returns a completed result even when Godot exits nonzero - success/failure is judged by cache state, not exit code, by the caller", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: "",
+      stderr: "some benign noise",
+      exitCode: 1,
+    }));
+
+    const result = await runGodotImport(baseOptions, { execFile });
+
+    expect(result.kind).toBe("completed");
+    if (result.kind === "completed") {
+      expect(result.exitCode).toBe(1);
+    }
+  });
+
+  it("returns a spawn-error result when execFile rejects (e.g. Godot binary missing)", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw new Error("ENOENT: spawn /usr/bin/godot");
+    });
+
+    const result = await runGodotImport(baseOptions, { execFile });
+
+    expect(result.kind).toBe("spawn-error");
+    if (result.kind === "spawn-error") {
+      expect(result.message).toContain("ENOENT");
+    }
+  });
+
+  it("returns a timeout result (not spawn-error) when execFile rejects with Node's timeout error shape", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw makeNodeTimeoutError();
+    });
+
+    const result = await runGodotImport({ ...baseOptions, timeoutMs: 5_000 }, { execFile });
+
+    expect(result).toEqual({ kind: "timeout", timeoutMs: 5_000 });
+  });
+
+  it("uses the default import timeout value in a timeout result when timeoutMs was not overridden", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw makeNodeTimeoutError();
+    });
+
+    const result = await runGodotImport(baseOptions, { execFile });
+
+    expect(result).toEqual({ kind: "timeout", timeoutMs: DEFAULT_IMPORT_TIMEOUT_MS });
   });
 });
