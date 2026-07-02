@@ -1,7 +1,7 @@
 import { execFile as execFileCb } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { createErrorResponse } from "../errors.js";
-import { detectGodotPath } from "../godot/paths.js";
+import { detectGodotPath, godotNotFoundError } from "../godot/paths.js";
 import type { ToolDescriptor } from "../registry.js";
 
 type ExecFileFn = (file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
@@ -49,14 +49,7 @@ export function createEditorTools(deps: EditorToolsDeps = defaultDeps): ToolDesc
       }
 
       if (!resolution.found) {
-        return createErrorResponse({
-          message: "Could not locate a Godot executable.",
-          possibleSolutions: [
-            "Set the GODOT_PATH environment variable to the full path of your Godot 4.x executable.",
-            `Checked these common install locations: ${resolution.candidates.join(", ")}`,
-            "Download Godot 4.x from https://godotengine.org/download if it is not installed.",
-          ],
-        });
+        return godotNotFoundError(resolution.candidates);
       }
 
       try {

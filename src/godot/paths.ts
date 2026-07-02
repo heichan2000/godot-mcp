@@ -17,6 +17,23 @@ export type GodotPathResolution =
   | { found: false; candidates: string[] };
 
 /**
+ * Guided error for a `detectGodotPath` miss (`{ found: false }`). Every tool
+ * handler in `tools/*.ts` resolves Godot the same way and hits this exact
+ * failure mode, so it lives here (next to `detectGodotPath` itself) rather
+ * than being copy-pasted per tool file.
+ */
+export function godotNotFoundError(candidates: string[]): ErrorResponse {
+  return createErrorResponse({
+    message: "Could not locate a Godot executable.",
+    possibleSolutions: [
+      "Set the GODOT_PATH environment variable to the full path of your Godot 4.x executable.",
+      `Checked these common install locations: ${candidates.join(", ")}`,
+      "Download Godot 4.x from https://godotengine.org/download if it is not installed.",
+    ],
+  });
+}
+
+/**
  * Common Godot 4 executable install locations per platform, used only when
  * no explicit path was configured. Not exhaustive - just the well-known spots.
  */

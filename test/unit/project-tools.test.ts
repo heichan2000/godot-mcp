@@ -17,6 +17,7 @@ function makeDeps(overrides: {
   runGodotImportResult?: RunGodotImportResult;
   runGodotImport?: typeof runGodotImport;
   hasGodotCacheDirResult?: boolean;
+  hasImportCacheResult?: boolean;
 }) {
   const resolution: GodotPathResolution = overrides.resolution ?? {
     found: true,
@@ -39,6 +40,7 @@ function makeDeps(overrides: {
           },
       ),
     hasGodotCacheDir: vi.fn(() => overrides.hasGodotCacheDirResult ?? true),
+    hasImportCache: vi.fn(() => overrides.hasImportCacheResult ?? true),
   };
 }
 
@@ -129,6 +131,28 @@ describe("createProjectTools", () => {
     expect(result.isError).toBe(true);
     const text = (result.content[0] as { text: string }).text;
     expect(text.toLowerCase()).toContain("project.godot");
+  });
+
+  it("returns a structured error, not success, when the run completed and .godot/ exists but no import cache was built (partial/failed import)", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runGodotImportResult: {
+        kind: "completed",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 50,
+      },
+      hasGodotCacheDirResult: true,
+      hasImportCacheResult: false,
+    });
+    const tool = getImportProjectTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.toLowerCase()).toContain("import cache");
   });
 
   it("returns a structured guided error when Godot cannot be resolved, without invoking runGodotImport", async () => {

@@ -5,6 +5,7 @@ import { hasImportCache } from "../godot/cache.js";
 import {
   assertInsideRoot,
   detectGodotPath,
+  godotNotFoundError,
   PathContainmentError,
   pathContainmentErrorResponse,
 } from "../godot/paths.js";
@@ -36,17 +37,6 @@ const defaultDeps: SceneToolsDeps = {
   operationsScriptPath: resolveOperationsScriptPath(),
   hasImportCache,
 };
-
-function godotNotFoundError(candidates: string[]) {
-  return createErrorResponse({
-    message: "Could not locate a Godot executable.",
-    possibleSolutions: [
-      "Set the GODOT_PATH environment variable to the full path of your Godot 4.x executable.",
-      `Checked these common install locations: ${candidates.join(", ")}`,
-      "Download Godot 4.x from https://godotengine.org/download if it is not installed.",
-    ],
-  });
-}
 
 /**
  * Guided error for an asset-dependent op (currently just `load_sprite`)

@@ -87,6 +87,7 @@ function makeProjectTools() {
     detectGodotPath,
     runGodotImport,
     hasGodotCacheDir,
+    hasImportCache,
   });
 }
 
