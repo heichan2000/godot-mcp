@@ -168,12 +168,10 @@ func op_add_node(params: Dictionary) -> Dictionary:
 	if not FileAccess.file_exists(res_path):
 		return { "ok": false, "error": "Scene does not exist at %s." % res_path }
 
-	var loaded: Resource = load(res_path)
-	if loaded == null or not (loaded is PackedScene):
-		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_path }
-	var root: Node = (loaded as PackedScene).instantiate()
-	if root == null:
-		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_path }
+	var load_outcome := load_scene_or_error(res_path)
+	if not load_outcome["ok"]:
+		return load_outcome
+	var root: Node = load_outcome["root"]
 
 	var parent: Node = root
 	if not parent_node_path.is_empty():
@@ -253,12 +251,10 @@ func op_load_sprite(params: Dictionary) -> Dictionary:
 	if not FileAccess.file_exists(res_scene_path):
 		return { "ok": false, "error": "Scene does not exist at %s." % res_scene_path }
 
-	var loaded_scene: Resource = load(res_scene_path)
-	if loaded_scene == null or not (loaded_scene is PackedScene):
-		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_scene_path }
-	var root: Node = (loaded_scene as PackedScene).instantiate()
-	if root == null:
-		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_scene_path }
+	var load_outcome := load_scene_or_error(res_scene_path)
+	if not load_outcome["ok"]:
+		return load_outcome
+	var root: Node = load_outcome["root"]
 
 	var target: Node = root
 	if not node_path.is_empty():
@@ -330,12 +326,10 @@ func op_save_scene(params: Dictionary) -> Dictionary:
 	if not FileAccess.file_exists(res_path):
 		return { "ok": false, "error": "Scene does not exist at %s." % res_path }
 
-	var loaded: Resource = load(res_path)
-	if loaded == null or not (loaded is PackedScene):
-		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_path }
-	var root: Node = (loaded as PackedScene).instantiate()
-	if root == null:
-		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_path }
+	var load_outcome := load_scene_or_error(res_path)
+	if not load_outcome["ok"]:
+		return load_outcome
+	var root: Node = load_outcome["root"]
 
 	var target_res_path := res_path
 	if not new_path.is_empty():
@@ -407,12 +401,10 @@ func op_export_mesh_library(params: Dictionary) -> Dictionary:
 	if not FileAccess.file_exists(res_scene_path):
 		return { "ok": false, "error": "Scene does not exist at %s." % res_scene_path }
 
-	var loaded: Resource = load(res_scene_path)
-	if loaded == null or not (loaded is PackedScene):
-		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_scene_path }
-	var root: Node = (loaded as PackedScene).instantiate()
-	if root == null:
-		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_scene_path }
+	var load_outcome := load_scene_or_error(res_scene_path)
+	if not load_outcome["ok"]:
+		return load_outcome
+	var root: Node = load_outcome["root"]
 
 	var mesh_instances: Array = []
 	collect_mesh_instances(root, mesh_instances)
@@ -509,6 +501,26 @@ func decode_property_value(raw_value: Variant) -> Variant:
 	if decoded == null:
 		return raw_value
 	return decoded
+
+## Loads res_path as a PackedScene and instantiates it, producing the exact
+## same error text every one of its four call sites previously duplicated
+## inline. Returns { "ok": true, "root": Node } on success, or
+## { "ok": false, "error": string } on either a load or an instantiate
+## failure - the same shape every op_* function returns, so callers can
+## return this dictionary directly on failure. Shared by op_add_node,
+## op_load_sprite, op_save_scene, and op_export_mesh_library, all of which
+## load an existing scene before doing their own thing with its root node.
+## Callers are expected to have already confirmed res_path exists (each op's
+## own FileAccess.file_exists check stays at the call site, ahead of this
+## call).
+func load_scene_or_error(res_path: String) -> Dictionary:
+	var loaded: Resource = load(res_path)
+	if loaded == null or not (loaded is PackedScene):
+		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_path }
+	var root: Node = (loaded as PackedScene).instantiate()
+	if root == null:
+		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_path }
+	return { "ok": true, "root": root }
 
 ## Packs root into a PackedScene and saves it to res_path, freeing root
 ## either way (pack() and free() must happen together regardless of

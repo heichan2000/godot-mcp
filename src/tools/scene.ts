@@ -543,7 +543,9 @@ export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescri
       "mesh; a MeshInstance3D with no mesh assigned is skipped. Set mesh_item_names to export " +
       "only a subset by node name - omit it to export every eligible MeshInstance3D. A scene " +
       "with no eligible mesh nodes, or a mesh_item_names filter that matches none of them, is a " +
-      "structured error.",
+      "structured error. Node names are only guaranteed unique among siblings in Godot, so a " +
+      "name in mesh_item_names can match more than one MeshInstance3D scene-wide - all of them " +
+      "are included as separate items.",
     inputSchema: exportMeshLibraryInputSchema,
     handler: async ({ project_path, scene_path, output_path, mesh_item_names }) => {
       try {
