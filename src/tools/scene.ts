@@ -66,6 +66,15 @@ function coldImportCacheError(projectPath: string) {
  * anything unrecognized (e.g. a future op's errors).
  */
 function operationErrorSolutions(error: string): string[] {
+  // Checked before the generic "already exists" branch below, which would
+  // otherwise match this message too (it also contains "already exists")
+  // but with create_scene-specific wording that doesn't mention new_path.
+  if (/refuses to overwrite an existing scene at new_path/i.test(error)) {
+    return [
+      "Choose a different new_path that does not already exist.",
+      "Omit new_path to re-save scene_path itself in place instead.",
+    ];
+  }
   if (/already exists/i.test(error)) {
     return [
       "Choose a different scene_path that does not already exist.",
@@ -120,6 +129,24 @@ function operationErrorSolutions(error: string): string[] {
     return [
       "Confirm texture_path points at a supported image format (e.g. .png).",
       "Re-run import_project to rebuild the import cache, then retry.",
+    ];
+  }
+  if (/contains no meshinstance3d nodes with an assigned mesh/i.test(error)) {
+    return [
+      "Add a MeshInstance3D node (via add_node) and assign a mesh via its mesh property before exporting.",
+      "Check that scene_path points at the intended scene.",
+    ];
+  }
+  if (/none of the requested mesh_item_names matched/i.test(error)) {
+    return [
+      "Check the exact, case-sensitive node names against the scene - the error lists the available item names.",
+      "Omit mesh_item_names to export every eligible MeshInstance3D in the scene.",
+    ];
+  }
+  if (/failed to save mesh library to/i.test(error)) {
+    return [
+      "Check that output_path's parent directory is writable.",
+      "Confirm output_path ends in a resource extension Godot recognizes (e.g. .res or .tres).",
     ];
   }
   return ["Check that scene_path and the other parameters are valid for this project."];
@@ -259,6 +286,43 @@ const loadSpriteInputSchema = {
     "Path to an existing image file (e.g. .png), relative to project_path. Must already be " +
       "covered by the project's import cache - run import_project first if it is not.",
   ),
+};
+
+const saveSceneInputSchema = {
+  project_path: projectPathSchema,
+  scene_path: scenePathSchema.describe(
+    "Path to an existing .tscn scene file, relative to project_path.",
+  ),
+  new_path: scenePathSchema
+    .optional()
+    .describe(
+      "Optional path to save the scene as a new file ('save as'), relative to project_path. " +
+        "Must not already exist - save_scene refuses to overwrite an existing file at new_path. " +
+        "When omitted, scene_path is re-saved in place instead.",
+    ),
+};
+
+const exportMeshLibraryInputSchema = {
+  project_path: projectPathSchema,
+  scene_path: scenePathSchema.describe(
+    "Path to an existing .tscn scene file, relative to project_path.",
+  ),
+  output_path: relativePathSchema.describe(
+    "Path to write the MeshLibrary resource to, relative to project_path. Conventionally ends " +
+      "in .res (a binary resource) or .tres (a human-readable text resource) - either is " +
+      "accepted. Parent directories are created as needed. Always overwritten if it already " +
+      "exists: unlike a hand-authored scene, this is a derived build artifact meant to be " +
+      "regenerated on demand.",
+  ),
+  mesh_item_names: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "Optional allow-list of node names to include as MeshLibrary items. Only MeshInstance3D " +
+        "nodes whose own node name is in this list are exported; every eligible MeshInstance3D " +
+        "in the scene is exported when omitted (or left empty). A name that matches nothing " +
+        "among the scene's mesh nodes is a structured error naming the available item names.",
+    ),
 };
 
 export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescriptor[] {
@@ -419,10 +483,112 @@ export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescri
     },
   };
 
+  const saveScene: ToolDescriptor<typeof saveSceneInputSchema> = {
+    name: "save_scene",
+    description:
+      "Saves an existing scene. Without new_path, re-saves the scene at scene_path in place - " +
+      "this server is stateless (every op loads, mutates, and saves within a single call), so " +
+      "this simply reloads and rewrites the same file, normalizing its contents rather than " +
+      "reflecting any accumulated editor state. With new_path, performs a 'save as': the loaded " +
+      "scene is written to new_path and the original file at scene_path is left untouched. " +
+      "save_scene refuses to overwrite an existing file at new_path (mirroring create_scene's " +
+      "guard against clobbering an existing scene) - to intentionally replace scene_path itself, " +
+      "just omit new_path and re-save in place.",
+    inputSchema: saveSceneInputSchema,
+    handler: async ({ project_path, scene_path, new_path }) => {
+      try {
+        assertInsideRoot(project_path, scene_path);
+        if (new_path !== undefined) {
+          assertInsideRoot(project_path, new_path);
+        }
+      } catch (error) {
+        if (error instanceof PathContainmentError) {
+          return pathContainmentErrorResponse(error);
+        }
+        throw error;
+      }
+
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] save_scene: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "save_scene",
+        params: {
+          scene_path,
+          new_path: new_path ?? "",
+        },
+      });
+
+      return operationResultToToolResult(result, "Saved scene");
+    },
+  };
+
+  const exportMeshLibrary: ToolDescriptor<typeof exportMeshLibraryInputSchema> = {
+    name: "export_mesh_library",
+    description:
+      "Exports every MeshInstance3D node in an existing scene (walked recursively, including " +
+      "the scene root) that has a mesh assigned as one item in a newly built MeshLibrary " +
+      "resource, saved to output_path. Item name = node name, item mesh = the node's assigned " +
+      "mesh; a MeshInstance3D with no mesh assigned is skipped. Set mesh_item_names to export " +
+      "only a subset by node name - omit it to export every eligible MeshInstance3D. A scene " +
+      "with no eligible mesh nodes, or a mesh_item_names filter that matches none of them, is a " +
+      "structured error.",
+    inputSchema: exportMeshLibraryInputSchema,
+    handler: async ({ project_path, scene_path, output_path, mesh_item_names }) => {
+      try {
+        assertInsideRoot(project_path, scene_path);
+        assertInsideRoot(project_path, output_path);
+      } catch (error) {
+        if (error instanceof PathContainmentError) {
+          return pathContainmentErrorResponse(error);
+        }
+        throw error;
+      }
+
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] export_mesh_library: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const params: Record<string, unknown> = { scene_path, output_path };
+      if (mesh_item_names !== undefined) {
+        params.mesh_item_names = mesh_item_names;
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "export_mesh_library",
+        params,
+      });
+
+      return operationResultToToolResult(result, "Exported mesh library");
+    },
+  };
+
   // registerAll pairs each descriptor's handler with its own inputSchema at
   // registration time (the SDK only ever invokes a handler with args already
   // validated against that same schema), so widening the concrete
-  // ToolDescriptor<typeof createSceneInputSchema | typeof addNodeInputSchema | typeof loadSpriteInputSchema>
+  // ToolDescriptor<typeof createSceneInputSchema | typeof addNodeInputSchema | typeof loadSpriteInputSchema
+  //   | typeof saveSceneInputSchema | typeof exportMeshLibraryInputSchema>
   // into the heterogeneous ToolDescriptor[] return type is safe in practice
   // even though the handler parameter types are contravariant and TS can't
   // verify that pairing across a shared array element type.
@@ -430,6 +596,8 @@ export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescri
     createScene as unknown as ToolDescriptor,
     addNode as unknown as ToolDescriptor,
     loadSprite as unknown as ToolDescriptor,
+    saveScene as unknown as ToolDescriptor,
+    exportMeshLibrary as unknown as ToolDescriptor,
   ];
 }
 

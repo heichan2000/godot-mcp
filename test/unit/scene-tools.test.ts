@@ -63,12 +63,32 @@ function getLoadSpriteTool(deps: ReturnType<typeof makeDeps>) {
   return tool;
 }
 
+function getSaveSceneTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createSceneTools(deps);
+  const tool = tools.find((t) => t.name === "save_scene");
+  if (!tool) throw new Error("save_scene descriptor not found");
+  return tool;
+}
+
+function getExportMeshLibraryTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createSceneTools(deps);
+  const tool = tools.find((t) => t.name === "export_mesh_library");
+  if (!tool) throw new Error("export_mesh_library descriptor not found");
+  return tool;
+}
+
 describe("createSceneTools", () => {
-  it("exposes create_scene, add_node, and load_sprite descriptors with their expected schema keys", () => {
+  it("exposes create_scene, add_node, load_sprite, save_scene, and export_mesh_library descriptors with their expected schema keys", () => {
     const deps = makeDeps({});
     const tools = createSceneTools(deps);
 
-    expect(tools.map((t) => t.name).sort()).toEqual(["add_node", "create_scene", "load_sprite"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "add_node",
+      "create_scene",
+      "export_mesh_library",
+      "load_sprite",
+      "save_scene",
+    ]);
 
     const createScene = tools.find((t) => t.name === "create_scene")!;
     expect(Object.keys(createScene.inputSchema).sort()).toEqual(
@@ -85,6 +105,16 @@ describe("createSceneTools", () => {
         "parent_node_path",
         "properties",
       ].sort(),
+    );
+
+    const saveScene = tools.find((t) => t.name === "save_scene")!;
+    expect(Object.keys(saveScene.inputSchema).sort()).toEqual(
+      ["project_path", "scene_path", "new_path"].sort(),
+    );
+
+    const exportMeshLibrary = tools.find((t) => t.name === "export_mesh_library")!;
+    expect(Object.keys(exportMeshLibrary.inputSchema).sort()).toEqual(
+      ["project_path", "scene_path", "output_path", "mesh_item_names"].sort(),
     );
   });
 
@@ -853,6 +883,452 @@ describe("load_sprite tool", () => {
 
     const result = await tool.handler(
       { project_path: root, scene_path: "scenes/hero.tscn", texture_path: "textures/sprite.png" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("1");
+    expect(text).toContain("2");
+  });
+});
+
+describe("save_scene tool", () => {
+  it("states the save-in-place vs save-as semantics plainly in its description", () => {
+    const deps = makeDeps({});
+    const tool = getSaveSceneTool(deps);
+
+    expect(tool.description.toLowerCase()).toContain("save as");
+    expect(tool.description.toLowerCase()).toContain("in place");
+    expect(tool.description.toLowerCase()).toContain("refuses to overwrite");
+  });
+
+  it("calls runOperation with the exact op/params contract, defaulting new_path to empty (re-save in place)", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "save_scene",
+        result: {
+          scene_path: "res://scenes/hero.tscn",
+          new_path: "",
+          saved_path: "res://scenes/hero.tscn",
+        },
+      },
+    });
+    const tool = getSaveSceneTool(deps);
+
+    await tool.handler({ project_path: root, scene_path: "scenes/hero.tscn" }, {} as never);
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        godotPath: "/usr/bin/godot",
+        projectPath: root,
+        operationScriptPath: "/dist/operations.gd",
+        operation: "save_scene",
+        params: { scene_path: "scenes/hero.tscn", new_path: "" },
+      }),
+    );
+  });
+
+  it("passes an explicit new_path through untouched", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getSaveSceneTool(deps);
+
+    await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", new_path: "scenes/hero-copy.tscn" },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: { scene_path: "scenes/hero.tscn", new_path: "scenes/hero-copy.tscn" },
+      }),
+    );
+  });
+
+  it("returns success content with the dispatcher's result as structuredContent", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "save_scene",
+        result: {
+          scene_path: "res://scenes/hero.tscn",
+          new_path: "res://scenes/hero-copy.tscn",
+          saved_path: "res://scenes/hero-copy.tscn",
+        },
+      },
+    });
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", new_path: "scenes/hero-copy.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect((result.content[0] as { text: string }).text).toContain("Saved scene");
+    expect(result.structuredContent).toEqual({
+      scene_path: "res://scenes/hero.tscn",
+      new_path: "res://scenes/hero-copy.tscn",
+      saved_path: "res://scenes/hero-copy.tscn",
+    });
+  });
+
+  it("rejects an escaping scene_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: path.join("..", "escape.tscn") },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an escaping new_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        new_path: path.join("..", "escape.tscn"),
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an absolute new_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getSaveSceneTool(deps);
+
+    const absolute = path.join(tmpdir(), "elsewhere.tscn");
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", new_path: absolute },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured guided error when Godot cannot be resolved, without invoking runOperation", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ resolution: { found: false, candidates: ["/usr/bin/godot"] } });
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("suggests a different new_path or omitting it when the dispatcher reports new_path already exists", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "save_scene",
+        error:
+          "Scene already exists at res://scenes/hero-copy.tscn. save_scene refuses to overwrite an existing scene at new_path.",
+      },
+    });
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", new_path: "scenes/hero-copy.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("already exists");
+    expect(text.toLowerCase()).toContain("new_path");
+  });
+
+  it("suggests using create_scene / checking scene_path when the dispatcher reports the scene does not exist", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "save_scene",
+        error: "Scene does not exist at res://scenes/missing.tscn.",
+      },
+    });
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/missing.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.toLowerCase()).toContain("scene_path");
+  });
+
+  it("returns a structured error naming both versions on a version mismatch", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "version-mismatch", expectedVersion: 1, actualVersion: 2 },
+    });
+    const tool = getSaveSceneTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("1");
+    expect(text).toContain("2");
+  });
+});
+
+describe("export_mesh_library tool", () => {
+  it("calls runOperation with the exact op/params contract, omitting mesh_item_names when not provided", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "export_mesh_library",
+        result: {
+          scene_path: "res://scenes/meshes.tscn",
+          output_path: "res://meshlib.res",
+          item_names: ["Box", "Sphere"],
+        },
+      },
+    });
+    const tool = getExportMeshLibraryTool(deps);
+
+    await tool.handler(
+      { project_path: root, scene_path: "scenes/meshes.tscn", output_path: "meshlib.res" },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        godotPath: "/usr/bin/godot",
+        projectPath: root,
+        operationScriptPath: "/dist/operations.gd",
+        operation: "export_mesh_library",
+        params: { scene_path: "scenes/meshes.tscn", output_path: "meshlib.res" },
+      }),
+    );
+  });
+
+  it("passes an explicit mesh_item_names filter through untouched", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getExportMeshLibraryTool(deps);
+
+    await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/meshes.tscn",
+        output_path: "meshlib.res",
+        mesh_item_names: ["Box"],
+      },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: {
+          scene_path: "scenes/meshes.tscn",
+          output_path: "meshlib.res",
+          mesh_item_names: ["Box"],
+        },
+      }),
+    );
+  });
+
+  it("returns success content with the dispatcher's result as structuredContent", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "export_mesh_library",
+        result: {
+          scene_path: "res://scenes/meshes.tscn",
+          output_path: "res://meshlib.res",
+          item_names: ["Box"],
+        },
+      },
+    });
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/meshes.tscn",
+        output_path: "meshlib.res",
+        mesh_item_names: ["Box"],
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect((result.content[0] as { text: string }).text).toContain("Exported mesh library");
+    expect(result.structuredContent).toEqual({
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://meshlib.res",
+      item_names: ["Box"],
+    });
+  });
+
+  it("rejects an escaping scene_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: path.join("..", "escape.tscn"),
+        output_path: "meshlib.res",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an escaping output_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/meshes.tscn",
+        output_path: path.join("..", "escape.res"),
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an absolute output_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getExportMeshLibraryTool(deps);
+
+    const absolute = path.join(tmpdir(), "elsewhere.res");
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/meshes.tscn", output_path: absolute },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured guided error when Godot cannot be resolved, without invoking runOperation", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ resolution: { found: false, candidates: ["/usr/bin/godot"] } });
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/meshes.tscn", output_path: "meshlib.res" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("suggests adding a MeshInstance3D when the scene has no eligible mesh nodes", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "export_mesh_library",
+        error:
+          "Scene at res://scenes/empty.tscn contains no MeshInstance3D nodes with an assigned mesh.",
+      },
+    });
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/empty.tscn", output_path: "meshlib.res" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("MeshInstance3D");
+  });
+
+  it("names the available item names when mesh_item_names filters to nothing", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "export_mesh_library",
+        error:
+          'None of the requested mesh_item_names matched a mesh item in the scene: ["Bogus"]. Available item names: ["Box", "Sphere"]',
+      },
+    });
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/meshes.tscn",
+        output_path: "meshlib.res",
+        mesh_item_names: ["Bogus"],
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Box");
+    expect(text).toContain("Sphere");
+  });
+
+  it("returns a structured error naming both versions on a version mismatch", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "version-mismatch", expectedVersion: 1, actualVersion: 2 },
+    });
+    const tool = getExportMeshLibraryTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/meshes.tscn", output_path: "meshlib.res" },
       {} as never,
     );
 

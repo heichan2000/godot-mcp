@@ -77,6 +77,10 @@ func dispatch(operation: String, params: Dictionary) -> Dictionary:
 			return op_add_node(params)
 		"load_sprite":
 			return op_load_sprite(params)
+		"save_scene":
+			return op_save_scene(params)
+		"export_mesh_library":
+			return op_export_mesh_library(params)
 		_:
 			return { "ok": false, "error": "Unknown operation: %s" % operation }
 
@@ -108,11 +112,9 @@ func op_create_scene(params: Dictionary) -> Dictionary:
 	if FileAccess.file_exists(res_path):
 		return { "ok": false, "error": "Scene already exists at %s. create_scene refuses to overwrite an existing scene." % res_path }
 
-	var dir_path := res_path.get_base_dir()
-	if not dir_path.is_empty() and not DirAccess.dir_exists_absolute(dir_path):
-		var mkdir_err := DirAccess.make_dir_recursive_absolute(dir_path)
-		if mkdir_err != OK:
-			return { "ok": false, "error": "Failed to create parent directory %s: error %d" % [dir_path, mkdir_err] }
+	var dir_outcome := ensure_parent_dir_exists(res_path)
+	if not dir_outcome["ok"]:
+		return dir_outcome
 
 	var root_node: Node = ClassDB.instantiate(root_node_type)
 	root_node.name = res_path.get_file().get_basename()
@@ -296,6 +298,178 @@ func op_load_sprite(params: Dictionary) -> Dictionary:
 		},
 	}
 
+## save_scene(scene_path: String, new_path: String = "")
+## Loads the existing scene at scene_path and re-saves it. Without new_path,
+## this re-saves the scene in place at scene_path: this server is stateless
+## (every op loads -> mutates -> saves within a single invocation, never
+## keeping an open editor session), so this simply reloads and rewrites the
+## same file, normalizing its on-disk contents rather than reflecting any
+## accumulated state. With new_path, this is "save as": the loaded scene is
+## written to new_path (parent directories created as needed) and the
+## original file at scene_path is left untouched. Refuses to overwrite an
+## existing file at new_path, mirroring op_create_scene's guard against
+## clobbering an existing scene - to replace scene_path itself, omit
+## new_path and let this re-save in place instead.
+func op_save_scene(params: Dictionary) -> Dictionary:
+	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
+	var scene_path: String = params["scene_path"]
+	if scene_path.is_empty():
+		return { "ok": false, "error": "scene_path must not be empty." }
+	# Defense in depth: see the matching comment in op_create_scene.
+	if scene_path.contains(".."):
+		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+
+	var new_path: String = params.get("new_path", "")
+	if typeof(new_path) != TYPE_STRING:
+		new_path = ""
+	if not new_path.is_empty() and new_path.contains(".."):
+		return { "ok": false, "error": "new_path must not contain '..' segments: %s" % new_path }
+
+	var res_path := to_res_path(scene_path)
+	if not FileAccess.file_exists(res_path):
+		return { "ok": false, "error": "Scene does not exist at %s." % res_path }
+
+	var loaded: Resource = load(res_path)
+	if loaded == null or not (loaded is PackedScene):
+		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_path }
+	var root: Node = (loaded as PackedScene).instantiate()
+	if root == null:
+		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_path }
+
+	var target_res_path := res_path
+	if not new_path.is_empty():
+		target_res_path = to_res_path(new_path)
+		if FileAccess.file_exists(target_res_path):
+			root.free()
+			return { "ok": false, "error": "Scene already exists at %s. save_scene refuses to overwrite an existing scene at new_path." % target_res_path }
+		var dir_outcome := ensure_parent_dir_exists(target_res_path)
+		if not dir_outcome["ok"]:
+			root.free()
+			return dir_outcome
+
+	var packed_outcome := pack_and_save(root, target_res_path)
+	if not packed_outcome["ok"]:
+		return packed_outcome
+
+	return {
+		"ok": true,
+		"result": {
+			"scene_path": res_path,
+			"new_path": target_res_path if not new_path.is_empty() else "",
+			"saved_path": target_res_path,
+		},
+	}
+
+## export_mesh_library(scene_path: String, output_path: String, mesh_item_names: Array = [])
+## Loads the existing scene at scene_path, recursively walks its node tree
+## (root included) for every MeshInstance3D node that has a mesh assigned,
+## and builds a new MeshLibrary resource with one item per match (item name
+## = node name, item mesh = MeshInstance3D.mesh). A MeshInstance3D with no
+## mesh assigned is skipped - an item with a null mesh is useless. When
+## mesh_item_names is a non-empty array, only mesh instances whose node name
+## is in that list are included (a name that matches nothing among the
+## scene's mesh nodes is a structured error naming the available item
+## names); an empty or omitted mesh_item_names exports every eligible
+## MeshInstance3D. Saves the resulting MeshLibrary to output_path (parent
+## directories created as needed) via ResourceSaver - always overwrites an
+## existing file at output_path, since a MeshLibrary export is a derived
+## build artifact meant to be regenerated, unlike a hand-authored scene
+## (contrast op_create_scene/op_save_scene's overwrite refusal).
+func op_export_mesh_library(params: Dictionary) -> Dictionary:
+	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
+	var scene_path: String = params["scene_path"]
+	if scene_path.is_empty():
+		return { "ok": false, "error": "scene_path must not be empty." }
+	# Defense in depth: see the matching comment in op_create_scene.
+	if scene_path.contains(".."):
+		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+
+	if not params.has("output_path") or typeof(params["output_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: output_path" }
+	var output_path: String = params["output_path"]
+	if output_path.is_empty():
+		return { "ok": false, "error": "output_path must not be empty." }
+	if output_path.contains(".."):
+		return { "ok": false, "error": "output_path must not contain '..' segments: %s" % output_path }
+
+	var mesh_item_names: Array = []
+	if params.has("mesh_item_names"):
+		if typeof(params["mesh_item_names"]) != TYPE_ARRAY:
+			return { "ok": false, "error": "mesh_item_names must be an array of strings." }
+		for entry in params["mesh_item_names"]:
+			if typeof(entry) != TYPE_STRING:
+				return { "ok": false, "error": "mesh_item_names must be an array of strings." }
+		mesh_item_names = params["mesh_item_names"]
+
+	var res_scene_path := to_res_path(scene_path)
+	if not FileAccess.file_exists(res_scene_path):
+		return { "ok": false, "error": "Scene does not exist at %s." % res_scene_path }
+
+	var loaded: Resource = load(res_scene_path)
+	if loaded == null or not (loaded is PackedScene):
+		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_scene_path }
+	var root: Node = (loaded as PackedScene).instantiate()
+	if root == null:
+		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_scene_path }
+
+	var mesh_instances: Array = []
+	collect_mesh_instances(root, mesh_instances)
+
+	if mesh_instances.is_empty():
+		root.free()
+		return { "ok": false, "error": "Scene at %s contains no MeshInstance3D nodes with an assigned mesh." % res_scene_path }
+
+	var selected: Array = mesh_instances
+	if not mesh_item_names.is_empty():
+		var available_names: Array = []
+		for mi in mesh_instances:
+			available_names.append((mi as MeshInstance3D).name as String)
+
+		selected = []
+		for mi in mesh_instances:
+			if mesh_item_names.has((mi as MeshInstance3D).name as String):
+				selected.append(mi)
+
+		if selected.is_empty():
+			root.free()
+			return {
+				"ok": false,
+				"error": "None of the requested mesh_item_names matched a mesh item in the scene: %s. Available item names: %s" % [JSON.stringify(mesh_item_names), JSON.stringify(available_names)],
+			}
+
+	var library := MeshLibrary.new()
+	var item_names: Array = []
+	var item_id := 0
+	for mi_variant in selected:
+		var mi: MeshInstance3D = mi_variant
+		library.create_item(item_id)
+		library.set_item_name(item_id, mi.name)
+		library.set_item_mesh(item_id, mi.mesh)
+		item_names.append(mi.name as String)
+		item_id += 1
+
+	root.free()
+
+	var res_output_path := to_res_path(output_path)
+	var dir_outcome := ensure_parent_dir_exists(res_output_path)
+	if not dir_outcome["ok"]:
+		return dir_outcome
+
+	var save_err := ResourceSaver.save(library, res_output_path)
+	if save_err != OK:
+		return { "ok": false, "error": "Failed to save mesh library to %s: error %d" % [res_output_path, save_err] }
+
+	return {
+		"ok": true,
+		"result": {
+			"scene_path": res_scene_path,
+			"output_path": res_output_path,
+			"item_names": item_names,
+		},
+	}
+
 ## True only if type_name names a Node-derived (or exactly Node) class that
 ## can be instantiated directly: known to ClassDB, is_parent_class of "Node"
 ## (Godot's own semantics treat a class as its own parent for this check, so
@@ -354,6 +528,33 @@ func pack_and_save(root: Node, res_path: String) -> Dictionary:
 		return { "ok": false, "error": "Failed to save scene to %s: error %d" % [res_path, save_err] }
 
 	return { "ok": true }
+
+## Creates res_path's parent directory (recursively) if it does not already
+## exist. Returns { "ok": true } on success (including the no-op case where
+## the directory already exists), or { "ok": false, "error": string } - the
+## same shape every op_* function returns, so callers can return this
+## dictionary directly on failure. Shared by op_create_scene, op_save_scene
+## (its new_path branch), and op_export_mesh_library, all of which may need
+## to write to a path whose parent directory doesn't exist yet.
+func ensure_parent_dir_exists(res_path: String) -> Dictionary:
+	var dir_path := res_path.get_base_dir()
+	if not dir_path.is_empty() and not DirAccess.dir_exists_absolute(dir_path):
+		var mkdir_err := DirAccess.make_dir_recursive_absolute(dir_path)
+		if mkdir_err != OK:
+			return { "ok": false, "error": "Failed to create parent directory %s: error %d" % [dir_path, mkdir_err] }
+	return { "ok": true }
+
+## Recursively collects every MeshInstance3D descendant of node (node itself
+## included) that has a non-null mesh assigned, appending each into out.
+## Node names are only guaranteed unique among siblings in Godot, not
+## scene-wide, so more than one collected item can share a name -
+## op_export_mesh_library treats that as legitimate (a mesh_item_names
+## filter matches every node with that name) rather than an error.
+func collect_mesh_instances(node: Node, out: Array) -> void:
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+		out.append(node)
+	for child in node.get_children():
+		collect_mesh_instances(child, out)
 
 func to_res_path(relative_path: String) -> String:
 	if relative_path.begins_with("res://"):
