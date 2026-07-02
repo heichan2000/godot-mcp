@@ -324,6 +324,7 @@ describe("get_project_info", () => {
         configVersion: 5,
         fileCount: 4,
         assetCount: 1,
+        truncated: false,
       },
     });
     const tool = getGetProjectInfoTool(deps);
@@ -337,7 +338,29 @@ describe("get_project_info", () => {
       godot_version: "4.3",
       file_count: 4,
       asset_count: 1,
+      counts_truncated: false,
     });
+  });
+
+  it("surfaces counts_truncated: true when the file-count walk hit its bounds", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      readProjectInfoResult: {
+        name: "Huge",
+        godotVersion: "4.3",
+        configVersion: 5,
+        fileCount: 10_000,
+        assetCount: 3_000,
+        truncated: true,
+      },
+    });
+    const tool = getGetProjectInfoTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as { counts_truncated: boolean };
+    expect(structured.counts_truncated).toBe(true);
   });
 
   it("returns a guided structured error when project.godot is missing at project_path", async () => {
@@ -354,6 +377,25 @@ describe("get_project_info", () => {
     expect(structured.possibleSolutions.length).toBeGreaterThan(0);
   });
 
+  it("returns a guided structured error, not a throw, when readProjectInfo itself throws (e.g. EIO mid-read)", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    deps.readProjectInfo.mockImplementation(() => {
+      const err = new Error("EIO: i/o error, read") as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    });
+    const tool = getGetProjectInfoTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("EIO");
+    const structured = result.structuredContent as { possibleSolutions: string[] };
+    expect(structured.possibleSolutions.length).toBeGreaterThan(0);
+  });
+
   it("never invokes Godot resolution - this is a pure filesystem read", async () => {
     const root = makeRoot();
     const deps = makeDeps({
@@ -363,6 +405,7 @@ describe("get_project_info", () => {
         configVersion: 5,
         fileCount: 1,
         assetCount: 0,
+        truncated: false,
       },
     });
     const tool = getGetProjectInfoTool(deps);

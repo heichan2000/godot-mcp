@@ -8,6 +8,8 @@ import {
   HARD_MAX_LIST_PROJECTS_DEPTH,
   listProjectDirs,
   MAX_LIST_PROJECTS_RESULTS,
+  MAX_PROJECT_FILE_COUNT,
+  MAX_PROJECT_FILE_WALK_DEPTH,
   parseProjectGodot,
   readProjectInfo,
 } from "../../src/godot/discovery.js";
@@ -244,6 +246,69 @@ describe("countProjectFiles", () => {
     expect(counts.fileCount).toBe(4);
     // Only sprite.png is a recognized asset extension.
     expect(counts.assetCount).toBe(1);
+    expect(counts.truncated).toBe(false);
+  });
+
+  it("does not walk deeper than MAX_PROJECT_FILE_WALK_DEPTH on an effectively infinite tree", () => {
+    // Every directory contains one file and one subdirectory - unbounded
+    // depth if the walk itself is not capped.
+    const readdirSync = vi.fn(() => [
+      { name: "file.txt", isDirectory: () => false, isFile: () => true },
+      { name: "child", isDirectory: () => true, isFile: () => false },
+    ]);
+
+    const counts = countProjectFiles("/root", { readdirSync: readdirSync as never });
+
+    // Called once per visited directory: the root plus at most
+    // MAX_PROJECT_FILE_WALK_DEPTH levels below it.
+    expect(readdirSync.mock.calls.length).toBeLessThanOrEqual(MAX_PROJECT_FILE_WALK_DEPTH + 1);
+    expect(counts.truncated).toBe(true);
+  });
+
+  it("caps fileCount at MAX_PROJECT_FILE_COUNT and reports truncated", () => {
+    const readdirSync = vi.fn((dir: string) => {
+      if (dir === "/root") {
+        return Array.from({ length: MAX_PROJECT_FILE_COUNT + 10 }, (_, i) => ({
+          name: `f${i}.png`,
+          isDirectory: () => false,
+          isFile: () => true,
+        }));
+      }
+      return [];
+    });
+
+    const counts = countProjectFiles("/root", { readdirSync: readdirSync as never });
+
+    expect(counts.fileCount).toBe(MAX_PROJECT_FILE_COUNT);
+    expect(counts.assetCount).toBeLessThanOrEqual(MAX_PROJECT_FILE_COUNT);
+    expect(counts.truncated).toBe(true);
+  });
+
+  it("stops reading further sibling directories once the file-count ceiling is hit", () => {
+    const perDir = Math.ceil(MAX_PROJECT_FILE_COUNT / 2) + 1;
+    const dirsRead: string[] = [];
+    const readdirSync = vi.fn((dir: string) => {
+      dirsRead.push(dir);
+      if (dir === "/root") {
+        return [
+          { name: "a", isDirectory: () => true, isFile: () => false },
+          { name: "b", isDirectory: () => true, isFile: () => false },
+          { name: "c", isDirectory: () => true, isFile: () => false },
+        ];
+      }
+      return Array.from({ length: perDir }, (_, i) => ({
+        name: `f${i}.txt`,
+        isDirectory: () => false,
+        isFile: () => true,
+      }));
+    });
+
+    const counts = countProjectFiles("/root", { readdirSync: readdirSync as never });
+
+    expect(counts.fileCount).toBe(MAX_PROJECT_FILE_COUNT);
+    expect(counts.truncated).toBe(true);
+    // a and b together already exceed the ceiling, so c must never be read.
+    expect(dirsRead).not.toContain(path.join("/root", "c"));
   });
 
   it("excludes the .godot cache directory from counts", () => {
@@ -279,5 +344,6 @@ describe("readProjectInfo", () => {
     expect(info?.godotVersion).toBe("4.3");
     expect(info?.fileCount).toBe(2);
     expect(info?.assetCount).toBe(1);
+    expect(info?.truncated).toBe(false);
   });
 });

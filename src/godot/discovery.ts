@@ -9,6 +9,13 @@ import path from "node:path";
  * Minimal shape `listProjectDirs`/`countProjectFiles` need from a directory
  * entry - matches `fs.Dirent` but is deliberately narrow so tests can inject
  * plain object literals instead of real `Dirent`s.
+ *
+ * Note on symlinks: a symlinked entry reports `false` for BOTH
+ * `isDirectory()` and `isFile()` (`fs.Dirent` describes the link itself,
+ * never its target), so symlinks are intentionally invisible to both
+ * walkers in this module - a deliberate choice that prevents symlink
+ * cycles from defeating the depth bounds and keeps results scoped to a
+ * directory's real contents.
  */
 export interface DirEntryLike {
   name: string;
@@ -165,6 +172,8 @@ export function listProjectDirs(
     if (depth >= maxDepth) return;
 
     for (const entry of entries) {
+      // Symlinked entries fail isDirectory() and are skipped - intentional,
+      // see the DirEntryLike doc comment.
       if (!entry.isDirectory() || isHiddenOrSystemDir(entry.name)) continue;
       visit(path.join(dir, entry.name), depth + 1);
       if (projects.length >= MAX_LIST_PROJECTS_RESULTS) {
@@ -204,11 +213,35 @@ const ASSET_EXTENSIONS = new Set([
   ".shader",
 ]);
 
+/**
+ * Hard ceiling on how deep `countProjectFiles`' walk descends below the
+ * project root. Same defensive rationale as `HARD_MAX_LIST_PROJECTS_DEPTH`:
+ * a `project.godot` sitting at the root of an enormous tree must not turn
+ * `get_project_info` into an unbounded synchronous walk. Real Godot projects
+ * comfortably fit within 10 levels; anything cut off is reported via the
+ * result's `truncated` flag rather than silently.
+ */
+export const MAX_PROJECT_FILE_WALK_DEPTH = 10;
+
+/**
+ * Hard ceiling on how many files `countProjectFiles` counts before stopping.
+ * When hit, `fileCount` is exactly this value, `assetCount` covers only the
+ * files seen up to that point, and `truncated` is `true` - counts become
+ * lower bounds ("at least this many"), never an aborted call.
+ */
+export const MAX_PROJECT_FILE_COUNT = 10_000;
+
 export interface ProjectFileCounts {
   /** Total regular files under the project, excluding hidden/system/cache directories. */
   fileCount: number;
   /** Subset of fileCount recognized as importable asset files (images/audio/fonts/models/shaders). */
   assetCount: number;
+  /**
+   * True when the walk stopped early (depth past MAX_PROJECT_FILE_WALK_DEPTH
+   * or MAX_PROJECT_FILE_COUNT files reached), making both counts lower
+   * bounds rather than exact totals.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -219,13 +252,21 @@ export interface ProjectFileCounts {
  * a recognized importable asset type (textures, audio, fonts, 3D models,
  * shaders) - scripts (`.gd`), scenes (`.tscn`), and `project.godot` itself
  * count toward `fileCount` but not `assetCount`.
+ *
+ * Bounded like `listProjectDirs` (godot-prd.md §7.2a's discipline applies to
+ * every discovery walk, not just list_projects): descends at most
+ * `MAX_PROJECT_FILE_WALK_DEPTH` levels and counts at most
+ * `MAX_PROJECT_FILE_COUNT` files, setting `truncated` when either bound
+ * cuts the walk short - so a project.godot at the root of a huge tree can
+ * never trigger an unbounded synchronous walk.
  */
 export function countProjectFiles(projectPath: string, deps: FsWalkDeps = {}): ProjectFileCounts {
   const readdir = deps.readdirSync ?? defaultReaddir;
   let fileCount = 0;
   let assetCount = 0;
+  let truncated = false;
 
-  function visit(dir: string): void {
+  function visit(dir: string, depth: number): void {
     let entries: DirEntryLike[];
     try {
       entries = readdir(dir);
@@ -235,9 +276,19 @@ export function countProjectFiles(projectPath: string, deps: FsWalkDeps = {}): P
     }
 
     for (const entry of entries) {
+      if (fileCount >= MAX_PROJECT_FILE_COUNT) {
+        truncated = true;
+        return;
+      }
+      // Symlinked entries fail both isDirectory() and isFile() and are
+      // skipped - intentional, see the DirEntryLike doc comment.
       if (entry.isDirectory()) {
         if (isHiddenOrSystemDir(entry.name)) continue;
-        visit(path.join(dir, entry.name));
+        if (depth >= MAX_PROJECT_FILE_WALK_DEPTH) {
+          truncated = true;
+          continue;
+        }
+        visit(path.join(dir, entry.name), depth + 1);
         continue;
       }
       if (!entry.isFile()) continue;
@@ -248,8 +299,8 @@ export function countProjectFiles(projectPath: string, deps: FsWalkDeps = {}): P
     }
   }
 
-  visit(projectPath);
-  return { fileCount, assetCount };
+  visit(projectPath, 0);
+  return { fileCount, assetCount, truncated };
 }
 
 export interface ProjectGodotInfo {

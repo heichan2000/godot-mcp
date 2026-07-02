@@ -233,11 +233,26 @@ export function createProjectTools(deps: ProjectToolsDeps = defaultDeps): ToolDe
     description:
       "Returns a Godot project's name, engine version (from project.godot's config/features " +
       "tag), and file/asset counts. project_path must directly contain project.godot - use " +
-      "list_projects to find candidates first if unsure. Does not invoke Godot - this is a pure " +
+      "list_projects to find candidates first if unsure. The counting walk is bounded (depth " +
+      "and total-file ceilings), so on an enormous project the counts are lower bounds and " +
+      "structuredContent.counts_truncated is true. Does not invoke Godot - this is a pure " +
       "filesystem read.",
     inputSchema: getProjectInfoInputSchema,
     handler: async ({ project_path }) => {
-      const info = deps.readProjectInfo(project_path);
+      let info;
+      try {
+        info = deps.readProjectInfo(project_path);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return createErrorResponse({
+          message: `Could not read project info at "${project_path}": ${reason}`,
+          possibleSolutions: [
+            "Confirm project_path points at an existing, accessible directory.",
+            "Check filesystem permissions for this path and retry.",
+          ],
+        });
+      }
+
       if (info === null) {
         return createErrorResponse({
           message: `No project.godot found at "${project_path}".`,
@@ -248,13 +263,16 @@ export function createProjectTools(deps: ProjectToolsDeps = defaultDeps): ToolDe
         });
       }
 
+      const truncatedNote = info.truncated
+        ? " Counting hit its bounds; file/asset counts are lower bounds."
+        : "";
       return {
         content: [
           {
             type: "text" as const,
             text:
               `Project "${info.name ?? "(unnamed)"}" - Godot ${info.godotVersion ?? "unknown"}, ` +
-              `${info.fileCount} file(s), ${info.assetCount} asset(s).`,
+              `${info.fileCount} file(s), ${info.assetCount} asset(s).${truncatedNote}`,
           },
         ],
         structuredContent: {
@@ -263,6 +281,7 @@ export function createProjectTools(deps: ProjectToolsDeps = defaultDeps): ToolDe
           godot_version: info.godotVersion ?? null,
           file_count: info.fileCount,
           asset_count: info.assetCount,
+          counts_truncated: info.truncated,
         },
       };
     },
