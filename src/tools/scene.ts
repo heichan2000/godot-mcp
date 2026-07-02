@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { createErrorResponse } from "../errors.js";
+import { hasImportCache } from "../godot/cache.js";
 import {
   assertInsideRoot,
   detectGodotPath,
@@ -14,7 +15,7 @@ import {
 } from "../godot/runner.js";
 import { propertiesSchema } from "../godot/values.js";
 import type { ToolDescriptor } from "../registry.js";
-import { projectPathSchema, scenePathSchema } from "../schemas.js";
+import { projectPathSchema, relativePathSchema, scenePathSchema } from "../schemas.js";
 
 const DEFAULT_ROOT_NODE_TYPE = "Node2D";
 
@@ -24,6 +25,8 @@ export interface SceneToolsDeps {
   runOperation: typeof runOperation;
   /** Path to the bundled operations.gd dispatcher script. */
   operationsScriptPath: string;
+  /** Checks whether project_path already has a built Godot import cache. */
+  hasImportCache: typeof hasImportCache;
 }
 
 const defaultDeps: SceneToolsDeps = {
@@ -31,6 +34,7 @@ const defaultDeps: SceneToolsDeps = {
   detectGodotPath,
   runOperation,
   operationsScriptPath: resolveOperationsScriptPath(),
+  hasImportCache,
 };
 
 function godotNotFoundError(candidates: string[]) {
@@ -40,6 +44,27 @@ function godotNotFoundError(candidates: string[]) {
       "Set the GODOT_PATH environment variable to the full path of your Godot 4.x executable.",
       `Checked these common install locations: ${candidates.join(", ")}`,
       "Download Godot 4.x from https://godotengine.org/download if it is not installed.",
+    ],
+  });
+}
+
+/**
+ * Guided error for an asset-dependent op (currently just `load_sprite`)
+ * called against a project with no built import cache. Headless Godot
+ * cannot `load()` an unimported asset - see `hasImportCache` in
+ * `../godot/cache.js` for the empirically-verified marker this checks -
+ * and this op never imports implicitly, so callers always see this error
+ * instead of a slow, confusing Godot failure.
+ */
+function coldImportCacheError(projectPath: string) {
+  return createErrorResponse({
+    message:
+      `Project at "${projectPath}" has no built Godot import cache yet ` +
+      "(.godot/imported/ is missing or empty). Headless Godot cannot load a texture or other " +
+      "importable asset until the project's assets have been imported at least once.",
+    possibleSolutions: [
+      "Run import_project with this project_path first to build the cache, then retry.",
+      "If you just added or changed asset files, re-run import_project to refresh the cache.",
     ],
   });
 }
@@ -81,6 +106,30 @@ function operationErrorSolutions(error: string): string[] {
     return [
       "Check the property name against the Godot class reference for node_type - it is case-sensitive.",
       'Property values must be a JSON primitive or a var_to_str text form, e.g. "Vector2(100, 50)".',
+    ];
+  }
+  if (/node_path not found in scene/i.test(error)) {
+    return [
+      "Check the exact node path (e.g. by inspecting the .tscn file).",
+      "Omit node_path to target the scene root itself.",
+    ];
+  }
+  if (/is not a sprite2d or sprite3d/i.test(error)) {
+    return [
+      "node_path must point at a Sprite2D or Sprite3D node - check the node's class in the scene.",
+      "Use add_node to create a Sprite2D or Sprite3D node first if one does not exist yet.",
+    ];
+  }
+  if (/texture does not exist at/i.test(error)) {
+    return [
+      "Check that texture_path points at an existing image file relative to project_path.",
+      "If the file was just added, re-run import_project so it enters the import cache.",
+    ];
+  }
+  if (/failed to load .* as a texture2d/i.test(error)) {
+    return [
+      "Confirm texture_path points at a supported image format (e.g. .png).",
+      "Re-run import_project to rebuild the import cache, then retry.",
     ];
   }
   return ["Check that scene_path and the other parameters are valid for this project."];
@@ -203,6 +252,25 @@ const addNodeInputSchema = {
     ),
 };
 
+const loadSpriteInputSchema = {
+  project_path: projectPathSchema,
+  scene_path: scenePathSchema.describe(
+    "Path to an existing .tscn scene file, relative to project_path.",
+  ),
+  node_path: z
+    .string()
+    .optional()
+    .describe(
+      "Path (relative to the scene root) of the Sprite2D or Sprite3D node to assign the " +
+        "texture to. Must already exist in the scene and be a Sprite2D or Sprite3D. Defaults to " +
+        "the scene root itself when omitted.",
+    ),
+  texture_path: relativePathSchema.describe(
+    "Path to an existing image file (e.g. .png), relative to project_path. Must already be " +
+      "covered by the project's import cache - run import_project first if it is not.",
+  ),
+};
+
 export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor<typeof createSceneInputSchema> = {
     name: "create_scene",
@@ -308,14 +376,71 @@ export function createSceneTools(deps: SceneToolsDeps = defaultDeps): ToolDescri
     },
   };
 
+  const loadSprite: ToolDescriptor<typeof loadSpriteInputSchema> = {
+    name: "load_sprite",
+    description:
+      "Assigns a texture to a Sprite2D or Sprite3D node in an existing scene and saves the " +
+      "scene in place. node_path is relative to the scene root (the root itself when omitted) " +
+      "and must already resolve to a Sprite2D or Sprite3D node - any other class is a structured " +
+      "error. Requires project_path's Godot import cache to already be built: this is the first " +
+      "asset-dependent tool, and headless Godot cannot load a texture until its assets have been " +
+      "imported at least once - if the cache is missing, this returns a guided error naming " +
+      "import_project instead of importing implicitly.",
+    inputSchema: loadSpriteInputSchema,
+    handler: async ({ project_path, scene_path, node_path, texture_path }) => {
+      try {
+        assertInsideRoot(project_path, scene_path);
+        assertInsideRoot(project_path, texture_path);
+      } catch (error) {
+        if (error instanceof PathContainmentError) {
+          return pathContainmentErrorResponse(error);
+        }
+        throw error;
+      }
+
+      if (!deps.hasImportCache(project_path)) {
+        return coldImportCacheError(project_path);
+      }
+
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] load_sprite: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "load_sprite",
+        params: {
+          scene_path,
+          node_path: node_path ?? "",
+          texture_path,
+        },
+      });
+
+      return operationResultToToolResult(result, "Loaded sprite texture");
+    },
+  };
+
   // registerAll pairs each descriptor's handler with its own inputSchema at
   // registration time (the SDK only ever invokes a handler with args already
   // validated against that same schema), so widening the concrete
-  // ToolDescriptor<typeof createSceneInputSchema | typeof addNodeInputSchema>
+  // ToolDescriptor<typeof createSceneInputSchema | typeof addNodeInputSchema | typeof loadSpriteInputSchema>
   // into the heterogeneous ToolDescriptor[] return type is safe in practice
   // even though the handler parameter types are contravariant and TS can't
   // verify that pairing across a shared array element type.
-  return [createScene as unknown as ToolDescriptor, addNode as unknown as ToolDescriptor];
+  return [
+    createScene as unknown as ToolDescriptor,
+    addNode as unknown as ToolDescriptor,
+    loadSprite as unknown as ToolDescriptor,
+  ];
 }
 
 export const sceneTools: ToolDescriptor[] = createSceneTools();

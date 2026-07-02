@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { Config } from "../../src/config.js";
+import { hasImportCache } from "../../src/godot/cache.js";
 import { detectGodotPath } from "../../src/godot/paths.js";
 import {
   DISPATCHER_VERSION,
@@ -61,6 +62,7 @@ function makeTools(overrides: { runOperation?: typeof runOperation } = {}) {
     detectGodotPath,
     runOperation: overrides.runOperation ?? runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),
+    hasImportCache,
   });
 }
 

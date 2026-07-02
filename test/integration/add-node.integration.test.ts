@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../../src/config.js";
+import { hasImportCache } from "../../src/godot/cache.js";
 import { detectGodotPath } from "../../src/godot/paths.js";
 import { resolveOperationsScriptPath, runOperation } from "../../src/godot/runner.js";
 import { createSceneTools } from "../../src/tools/scene.js";
@@ -70,6 +71,7 @@ function makeTools() {
     detectGodotPath,
     runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),
+    hasImportCache,
   });
 }
 

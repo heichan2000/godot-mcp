@@ -16,6 +16,7 @@ function makeDeps(overrides: {
   resolution?: GodotPathResolution;
   runOperationResult?: RunOperationResult;
   runOperation?: typeof runOperation;
+  hasImportCacheResult?: boolean;
 }) {
   const resolution: GodotPathResolution = overrides.resolution ?? {
     found: true,
@@ -37,6 +38,7 @@ function makeDeps(overrides: {
           },
       ),
     operationsScriptPath: "/dist/operations.gd",
+    hasImportCache: vi.fn(() => overrides.hasImportCacheResult ?? true),
   };
 }
 
@@ -54,12 +56,19 @@ function getAddNodeTool(deps: ReturnType<typeof makeDeps>) {
   return tool;
 }
 
+function getLoadSpriteTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createSceneTools(deps);
+  const tool = tools.find((t) => t.name === "load_sprite");
+  if (!tool) throw new Error("load_sprite descriptor not found");
+  return tool;
+}
+
 describe("createSceneTools", () => {
-  it("exposes create_scene and add_node descriptors with their expected schema keys", () => {
+  it("exposes create_scene, add_node, and load_sprite descriptors with their expected schema keys", () => {
     const deps = makeDeps({});
     const tools = createSceneTools(deps);
 
-    expect(tools.map((t) => t.name).sort()).toEqual(["add_node", "create_scene"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["add_node", "create_scene", "load_sprite"]);
 
     const createScene = tools.find((t) => t.name === "create_scene")!;
     expect(Object.keys(createScene.inputSchema).sort()).toEqual(
@@ -572,6 +581,278 @@ describe("add_node tool", () => {
         node_type: "Sprite2D",
         node_name: "Sprite",
       },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("1");
+    expect(text).toContain("2");
+  });
+});
+
+describe("load_sprite tool", () => {
+  it("calls runOperation with the exact op/params contract, defaulting node_path to the scene root", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "load_sprite",
+        result: { scene_path: "res://scenes/hero.tscn" },
+      },
+    });
+    const tool = getLoadSpriteTool(deps);
+
+    await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        godotPath: "/usr/bin/godot",
+        projectPath: root,
+        operationScriptPath: "/dist/operations.gd",
+        operation: "load_sprite",
+        params: {
+          scene_path: "scenes/hero.tscn",
+          node_path: "",
+          texture_path: "textures/sprite.png",
+        },
+      }),
+    );
+  });
+
+  it("passes an explicit node_path through untouched", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getLoadSpriteTool(deps);
+
+    await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_path: "Hero",
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: {
+          scene_path: "scenes/hero.tscn",
+          node_path: "Hero",
+          texture_path: "textures/sprite.png",
+        },
+      }),
+    );
+  });
+
+  it("returns success content with the dispatcher's result as structuredContent", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "load_sprite",
+        result: {
+          scene_path: "res://scenes/hero.tscn",
+          node_path: "Hero",
+          texture_path: "res://textures/sprite.png",
+        },
+      },
+    });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_path: "Hero",
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect((result.content[0] as { text: string }).text).toContain("Loaded sprite texture");
+    expect(result.structuredContent).toEqual({
+      scene_path: "res://scenes/hero.tscn",
+      node_path: "Hero",
+      texture_path: "res://textures/sprite.png",
+    });
+  });
+
+  it("rejects an escaping scene_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: path.join("..", "escape.tscn"),
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an escaping texture_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        texture_path: path.join("..", "escape.png"),
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an absolute texture_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getLoadSpriteTool(deps);
+
+    const absolute = path.join(tmpdir(), "elsewhere.png");
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", texture_path: absolute },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("returns a guided cold-cache error naming import_project WITHOUT invoking Godot, when the import cache is missing", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ hasImportCacheResult: false });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("import_project");
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("checks the import cache for project_path", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getLoadSpriteTool(deps);
+
+    await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", texture_path: "textures/sprite.png" },
+      {} as never,
+    );
+
+    expect(deps.hasImportCache).toHaveBeenCalledWith(root);
+  });
+
+  it("returns a structured guided error when Godot cannot be resolved, without invoking runOperation", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ resolution: { found: false, candidates: ["/usr/bin/godot"] } });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", texture_path: "textures/sprite.png" },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("suggests checking the node's class when the target node is not a Sprite2D/Sprite3D", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "load_sprite",
+        error: "Node at Body is a Node2D, not a Sprite2D or Sprite3D.",
+      },
+    });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_path: "Body",
+        texture_path: "textures/sprite.png",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Sprite2D");
+    expect(text).toContain("Sprite3D");
+  });
+
+  it("suggests checking texture_path when the texture does not exist", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "load_sprite",
+        error: "Texture does not exist at res://textures/missing.png.",
+      },
+    });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        texture_path: "textures/missing.png",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.toLowerCase()).toContain("texture_path");
+  });
+
+  it("returns a structured error naming both versions on a version mismatch", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "version-mismatch", expectedVersion: 1, actualVersion: 2 },
+    });
+    const tool = getLoadSpriteTool(deps);
+
+    const result = await tool.handler(
+      { project_path: root, scene_path: "scenes/hero.tscn", texture_path: "textures/sprite.png" },
       {} as never,
     );
 

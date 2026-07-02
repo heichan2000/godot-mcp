@@ -75,6 +75,8 @@ func dispatch(operation: String, params: Dictionary) -> Dictionary:
 			return op_create_scene(params)
 		"add_node":
 			return op_add_node(params)
+		"load_sprite":
+			return op_load_sprite(params)
 		_:
 			return { "ok": false, "error": "Unknown operation: %s" % operation }
 
@@ -207,6 +209,90 @@ func op_add_node(params: Dictionary) -> Dictionary:
 			"node_type": node_type,
 			"node_name": node_name,
 			"node_path": new_node_path,
+		},
+	}
+
+## load_sprite(scene_path: String, node_path: String = "", texture_path: String)
+## Loads the existing scene at scene_path, resolves node_path to a node (the
+## scene root itself when node_path is empty or omitted), verifies it is a
+## Sprite2D or Sprite3D (both expose a Texture2D-typed `texture` property),
+## load()s texture_path as a Texture2D, assigns it to that node's `texture`
+## property, then packs and saves the scene back in place.
+##
+## Callers must confirm the project's import cache is already built (see
+## hasImportCache in src/godot/cache.ts) BEFORE invoking this op - headless
+## Godot cannot load() an unimported asset, and this op never attempts to
+## import anything itself, matching godot-prd.md §3 "Asset imports": asset-
+## dependent ops detect a cold cache and guide the caller to import_project
+## rather than importing implicitly.
+func op_load_sprite(params: Dictionary) -> Dictionary:
+	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
+	var scene_path: String = params["scene_path"]
+	if scene_path.is_empty():
+		return { "ok": false, "error": "scene_path must not be empty." }
+	# Defense in depth: see the matching comment in op_create_scene.
+	if scene_path.contains(".."):
+		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+
+	if not params.has("texture_path") or typeof(params["texture_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: texture_path" }
+	var texture_path: String = params["texture_path"]
+	if texture_path.is_empty():
+		return { "ok": false, "error": "texture_path must not be empty." }
+	if texture_path.contains(".."):
+		return { "ok": false, "error": "texture_path must not contain '..' segments: %s" % texture_path }
+
+	var node_path: String = params.get("node_path", "")
+	if typeof(node_path) != TYPE_STRING:
+		node_path = ""
+
+	var res_scene_path := to_res_path(scene_path)
+	if not FileAccess.file_exists(res_scene_path):
+		return { "ok": false, "error": "Scene does not exist at %s." % res_scene_path }
+
+	var loaded_scene: Resource = load(res_scene_path)
+	if loaded_scene == null or not (loaded_scene is PackedScene):
+		return { "ok": false, "error": "Failed to load scene at %s as a PackedScene." % res_scene_path }
+	var root: Node = (loaded_scene as PackedScene).instantiate()
+	if root == null:
+		return { "ok": false, "error": "Failed to instantiate scene at %s." % res_scene_path }
+
+	var target: Node = root
+	if not node_path.is_empty():
+		target = root.get_node_or_null(NodePath(node_path))
+		if target == null:
+			root.free()
+			return { "ok": false, "error": "node_path not found in scene: %s" % node_path }
+
+	if not (target is Sprite2D or target is Sprite3D):
+		var described_path := node_path if not node_path.is_empty() else "<scene root>"
+		var actual_class := target.get_class()
+		root.free()
+		return { "ok": false, "error": "Node at %s is a %s, not a Sprite2D or Sprite3D." % [described_path, actual_class] }
+
+	var res_texture_path := to_res_path(texture_path)
+	if not FileAccess.file_exists(res_texture_path):
+		root.free()
+		return { "ok": false, "error": "Texture does not exist at %s." % res_texture_path }
+
+	var texture: Resource = load(res_texture_path)
+	if texture == null or not (texture is Texture2D):
+		root.free()
+		return { "ok": false, "error": "Failed to load %s as a Texture2D. Confirm the file is a supported image format and that the project's import cache is built (see import_project)." % res_texture_path }
+
+	target.set("texture", texture)
+
+	var packed_outcome := pack_and_save(root, res_scene_path)
+	if not packed_outcome["ok"]:
+		return packed_outcome
+
+	return {
+		"ok": true,
+		"result": {
+			"scene_path": res_scene_path,
+			"node_path": node_path,
+			"texture_path": res_texture_path,
 		},
 	}
 
