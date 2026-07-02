@@ -10,7 +10,7 @@ import { freshSampleProject, godotPath, hasGodot } from "./support.js";
 
 function makeTools(overrides: { runOperation?: typeof runOperation } = {}) {
   return createSceneTools({
-    loadConfig: (): Config => ({ godotPath, debug: false }),
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
     detectGodotPath,
     runOperation: overrides.runOperation ?? runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),

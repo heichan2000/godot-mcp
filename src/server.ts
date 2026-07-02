@@ -5,6 +5,7 @@ import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./god
 import { registerAll } from "./registry.js";
 import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
 import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
+import { createRunTools, type RunToolsDeps } from "./tools/run.js";
 import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 
 const SERVER_NAME = "godot-mcp";
@@ -15,6 +16,7 @@ export interface CreateServerOptions {
   editorToolsDeps?: EditorToolsDeps;
   sceneToolsDeps?: SceneToolsDeps;
   projectToolsDeps?: ProjectToolsDeps;
+  runToolsDeps?: RunToolsDeps;
 }
 
 /**
@@ -28,6 +30,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     ...createEditorTools(options.editorToolsDeps),
     ...createSceneTools(options.sceneToolsDeps),
     ...createProjectTools(options.projectToolsDeps),
+    ...createRunTools(options.runToolsDeps),
   ];
   registerAll(server, tools);
   return server;

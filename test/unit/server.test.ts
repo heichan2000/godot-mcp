@@ -8,12 +8,13 @@ import type { GodotPathResolution } from "../../src/godot/paths.js";
 async function connectedClient(resolution: GodotPathResolution) {
   const server = createServer({
     editorToolsDeps: {
-      loadConfig: (): Config => ({ godotPath: undefined, debug: false }),
+      loadConfig: (): Config => ({ godotPath: undefined, debug: false, outputBufferLines: 1000 }),
       detectGodotPath: () => resolution,
       execFile: vi.fn(async () => ({ stdout: "4.6.3.stable.official.abcd1234\n", stderr: "" })),
+      spawnDetached: vi.fn(() => ({ pid: 123, unref: vi.fn() })),
     },
     sceneToolsDeps: {
-      loadConfig: (): Config => ({ godotPath: undefined, debug: false }),
+      loadConfig: (): Config => ({ godotPath: undefined, debug: false, outputBufferLines: 1000 }),
       detectGodotPath: () => resolution,
       runOperation: vi.fn(async () => ({
         kind: "success" as const,

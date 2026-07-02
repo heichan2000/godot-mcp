@@ -58,7 +58,7 @@ async function loadScene(projectPath: string, resScenePath: string): Promise<Ver
 
 function makeTools(overrides: { runOperation?: typeof runOperation } = {}) {
   return createSceneTools({
-    loadConfig: (): Config => ({ godotPath, debug: false }),
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
     detectGodotPath,
     runOperation: overrides.runOperation ?? runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),

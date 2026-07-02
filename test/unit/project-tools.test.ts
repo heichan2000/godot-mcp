@@ -25,7 +25,12 @@ function makeDeps(overrides: {
     source: "configured",
   };
   return {
-    loadConfig: vi.fn((): Config => ({ godotPath: undefined, debug: false, ...overrides.config })),
+    loadConfig: vi.fn((): Config => ({
+      godotPath: undefined,
+      debug: false,
+      outputBufferLines: 1000,
+      ...overrides.config,
+    })),
     detectGodotPath: vi.fn(() => resolution),
     runGodotImport:
       overrides.runGodotImport ??

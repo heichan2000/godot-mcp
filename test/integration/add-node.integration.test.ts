@@ -67,7 +67,7 @@ async function verifyNode(
 
 function makeTools() {
   return createSceneTools({
-    loadConfig: (): Config => ({ godotPath, debug: false }),
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
     detectGodotPath,
     runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),

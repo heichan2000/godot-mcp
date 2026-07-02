@@ -2,18 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 import { createEditorTools } from "../../src/tools/editor.js";
 import type { Config } from "../../src/config.js";
 import type { GodotPathResolution } from "../../src/godot/paths.js";
+import type { DetachedProcessHandle } from "../../src/godot/process.js";
 
 function makeDeps(overrides: {
   config?: Partial<Config>;
   resolution: GodotPathResolution;
   execFile?: (file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  spawnDetached?: (file: string, args: string[]) => DetachedProcessHandle;
 }) {
   return {
-    loadConfig: vi.fn((): Config => ({ godotPath: undefined, debug: false, ...overrides.config })),
+    loadConfig: vi.fn((): Config => ({
+      godotPath: undefined,
+      debug: false,
+      outputBufferLines: 1000,
+      ...overrides.config,
+    })),
     detectGodotPath: vi.fn(() => overrides.resolution),
     execFile:
       overrides.execFile ??
       vi.fn(async () => ({ stdout: "4.6.3.stable.official.abcd1234\n", stderr: "" })),
+    spawnDetached: overrides.spawnDetached ?? vi.fn(() => ({ pid: 5555 })),
   };
 }
 
@@ -24,15 +32,25 @@ function getVersionTool(deps: ReturnType<typeof makeDeps>) {
   return tool;
 }
 
+function getLaunchEditorTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createEditorTools(deps);
+  const tool = tools.find((t) => t.name === "launch_editor");
+  if (!tool) throw new Error("launch_editor descriptor not found");
+  return tool;
+}
+
 describe("createEditorTools", () => {
-  it("exposes exactly one descriptor named get_godot_version with an empty input schema", () => {
+  it("exposes get_godot_version and launch_editor descriptors", () => {
     const deps = makeDeps({ resolution: { found: false, candidates: [] } });
     const tools = createEditorTools(deps);
 
-    expect(tools).toHaveLength(1);
-    expect(tools[0]!.name).toBe("get_godot_version");
-    expect(tools[0]!.inputSchema).toEqual({});
-    expect(tools[0]!.description.length).toBeGreaterThan(0);
+    expect(tools.map((t) => t.name).sort()).toEqual(["get_godot_version", "launch_editor"]);
+    const getVersion = tools.find((t) => t.name === "get_godot_version")!;
+    expect(getVersion.inputSchema).toEqual({});
+    expect(getVersion.description.length).toBeGreaterThan(0);
+    const launchEditor = tools.find((t) => t.name === "launch_editor")!;
+    expect(Object.keys(launchEditor.inputSchema)).toEqual(["project_path"]);
+    expect(launchEditor.description.length).toBeGreaterThan(0);
   });
 
   it("returns the trimmed version string when Godot resolves successfully", async () => {
@@ -118,5 +136,41 @@ describe("createEditorTools", () => {
     expect(errorSpy).toHaveBeenCalled();
 
     errorSpy.mockRestore();
+  });
+
+  describe("launch_editor", () => {
+    it("spawns the resolved Godot binary with -e --path <project_path> and returns immediately", async () => {
+      const spawnDetached = vi.fn(() => ({ pid: 7777 }));
+      const deps = makeDeps({
+        resolution: { found: true, path: "/opt/godot/godot", source: "configured" },
+        spawnDetached,
+      });
+      const tool = getLaunchEditorTool(deps);
+
+      const result = await tool.handler({ project_path: "/projects/demo" }, {} as never);
+
+      expect(spawnDetached).toHaveBeenCalledWith("/opt/godot/godot", [
+        "-e",
+        "--path",
+        "/projects/demo",
+      ]);
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as { pid: number | null };
+      expect(structured.pid).toBe(7777);
+    });
+
+    it("returns a structured guided error when Godot cannot be resolved, without spawning", async () => {
+      const spawnDetached = vi.fn(() => ({ pid: 1 }));
+      const deps = makeDeps({
+        resolution: { found: false, candidates: ["/usr/bin/godot"] },
+        spawnDetached,
+      });
+      const tool = getLaunchEditorTool(deps);
+
+      const result = await tool.handler({ project_path: "/projects/demo" }, {} as never);
+
+      expect(result.isError).toBe(true);
+      expect(spawnDetached).not.toHaveBeenCalled();
+    });
   });
 });

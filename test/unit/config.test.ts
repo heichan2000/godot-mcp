@@ -32,4 +32,25 @@ describe("loadConfig", () => {
 
     expect(config.debug).toBe(false);
   });
+
+  it("defaults outputBufferLines to 1000 when OUTPUT_BUFFER_LINES is unset", () => {
+    const config = loadConfig({});
+
+    expect(config.outputBufferLines).toBe(1000);
+  });
+
+  it("reads a valid positive integer OUTPUT_BUFFER_LINES from env", () => {
+    const config = loadConfig({ OUTPUT_BUFFER_LINES: "2500" });
+
+    expect(config.outputBufferLines).toBe(2500);
+  });
+
+  it.each(["", "   ", "0", "-5", "not-a-number", "12.5"])(
+    "falls back to the default 1000 for an invalid OUTPUT_BUFFER_LINES=%s",
+    (value) => {
+      const config = loadConfig({ OUTPUT_BUFFER_LINES: value });
+
+      expect(config.outputBufferLines).toBe(1000);
+    },
+  );
 });

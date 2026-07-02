@@ -73,7 +73,7 @@ async function verifySprite(
 
 function makeSceneTools(overrides: { runOperation?: typeof runOperation } = {}) {
   return createSceneTools({
-    loadConfig: (): Config => ({ godotPath, debug: false }),
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
     detectGodotPath,
     runOperation: overrides.runOperation ?? runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),
@@ -83,7 +83,7 @@ function makeSceneTools(overrides: { runOperation?: typeof runOperation } = {}) 
 
 function makeProjectTools() {
   return createProjectTools({
-    loadConfig: (): Config => ({ godotPath, debug: false }),
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
     detectGodotPath,
     runGodotImport,
     hasGodotCacheDir,
