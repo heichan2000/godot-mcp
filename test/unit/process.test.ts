@@ -296,6 +296,27 @@ describe("GodotProcessManager", () => {
     expect(manager.stop()).toEqual({ kind: "not-running" });
   });
 
+  it("stop() returns a trailing partial line (no newline yet) in the tail instead of dropping it", () => {
+    const { manager, children } = makeManagerAndChildren();
+    manager.run(baseRequest);
+    const child = children[0]!;
+
+    child.stdout.emit("data", Buffer.from("complete line\n"));
+    // The child is killed mid-write: its final chunks never got a newline,
+    // and the "close" event (whose handler would flush) has not fired yet
+    // when stop() takes its snapshot.
+    child.stdout.emit("data", Buffer.from("killed mid-write"));
+    child.stderr.emit("data", Buffer.from("stderr mid-write"));
+
+    const outcome = manager.stop();
+
+    expect(outcome).toEqual({
+      kind: "stopped",
+      output: ["complete line", "killed mid-write"],
+      errors: ["stderr mid-write"],
+    });
+  });
+
   it("getOutput() does not disturb the run (repeated polling returns a stable snapshot, no kill)", () => {
     const { manager, children } = makeManagerAndChildren();
     manager.run(baseRequest);

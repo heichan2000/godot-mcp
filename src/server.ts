@@ -2,10 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
 import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./godot/runner.js";
+import type { GodotProcessManager } from "./godot/process.js";
 import { registerAll } from "./registry.js";
 import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
 import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
-import { createRunTools, type RunToolsDeps } from "./tools/run.js";
+import { createRunTools, defaultProcessManager, type RunToolsDeps } from "./tools/run.js";
 import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 
 const SERVER_NAME = "godot-mcp";
@@ -36,6 +37,41 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   return server;
 }
 
+export interface CreateShutdownOptions {
+  /** The manager owning any active run_project child (see tools/run.ts's defaultProcessManager). */
+  processManager: Pick<GodotProcessManager, "stop">;
+  closeServer: () => Promise<void>;
+  exit: (code: number) => void;
+  debugLog: (message: string) => void;
+}
+
+/**
+ * Builds the signal handler that tears the server down. Kills any active
+ * `run_project` child first: it is a plain non-detached spawn (unlike
+ * `launch_editor`'s deliberately detached editor), so exiting without
+ * stopping it would orphan a Godot process that keeps running indefinitely
+ * after Ctrl-C. Exits even if closing the server fails - shutdown must
+ * never hang.
+ */
+export function createShutdown(options: CreateShutdownOptions): (signal: string) => void {
+  return (signal) => {
+    options.debugLog(`received ${signal}, shutting down`);
+    try {
+      options.processManager.stop();
+    } catch {
+      // Best-effort: an already-dead child must not block shutdown.
+    }
+    void options
+      .closeServer()
+      .catch((error: unknown) => {
+        // A close failure must neither block the exit below nor surface as
+        // an unhandled rejection during shutdown.
+        options.debugLog(`server close failed: ${String(error)}`);
+      })
+      .finally(() => options.exit(0));
+  };
+}
+
 /** Starts the server over stdio. Logs (stderr only) are gated by DEBUG. */
 export async function main(): Promise<void> {
   const config = loadConfig();
@@ -64,10 +100,12 @@ export async function main(): Promise<void> {
 
   debugLog("connected; awaiting requests over stdio");
 
-  const shutdown = (signal: string) => {
-    debugLog(`received ${signal}, shutting down`);
-    void server.close().finally(() => process.exit(0));
-  };
+  const shutdown = createShutdown({
+    processManager: defaultProcessManager,
+    closeServer: () => server.close(),
+    exit: (code) => process.exit(code),
+    debugLog,
+  });
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }

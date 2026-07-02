@@ -19,18 +19,27 @@ export interface RunToolsDeps {
   processManager: GodotProcessManager;
 }
 
+/**
+ * The process manager the production server actually uses (the default-deps
+ * singleton behind `runTools`). Exported so `server.ts`'s shutdown path can
+ * kill an active run before the server process exits - the child is a plain
+ * non-detached spawn, so without this it would be orphaned and keep running
+ * indefinitely after Ctrl-C.
+ */
+export const defaultProcessManager = new GodotProcessManager();
+
 const defaultDeps: RunToolsDeps = {
   loadConfig,
   detectGodotPath,
-  processManager: new GodotProcessManager(),
+  processManager: defaultProcessManager,
 };
 
 /**
  * Converts a project-relative path (already containment-checked) into the
  * res:// form Godot's CLI expects as its positional "scene to run" argument
- * - forward slashes always, mirroring the res_path helper in operations.gd
- * (godot/operations.gd around resolve_res_path) even though this call never
- * goes through the dispatcher itself.
+ * - forward slashes always, mirroring the `to_res_path` helper in
+ * `godot/operations.gd` even though this call never goes through the
+ * dispatcher itself.
  */
 function toResourcePath(relative: string): string {
   const normalized = relative.split(path.sep).join("/");

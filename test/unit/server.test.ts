@@ -1,9 +1,15 @@
+import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
-import { createServer } from "../../src/server.js";
+import { createServer, createShutdown } from "../../src/server.js";
 import type { Config } from "../../src/config.js";
 import type { GodotPathResolution } from "../../src/godot/paths.js";
+import {
+  GodotProcessManager,
+  type ManagedChildProcess,
+  type SpawnFn,
+} from "../../src/godot/process.js";
 
 async function connectedClient(resolution: GodotPathResolution) {
   const server = createServer({
@@ -69,5 +75,80 @@ describe("createServer (stdio MCP wiring)", () => {
     expect(result.isError).toBe(true);
     const structured = result.structuredContent as { possibleSolutions: string[] };
     expect(structured.possibleSolutions.join(" ")).toContain("GODOT_PATH");
+  });
+});
+
+describe("createShutdown", () => {
+  function makeManagerWithActiveChild() {
+    const killSpy = vi.fn(() => true);
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: killSpy,
+    }) as unknown as ManagedChildProcess;
+    const spawn: SpawnFn = vi.fn(() => child);
+    const manager = new GodotProcessManager({ spawn });
+    manager.run({
+      godotPath: "/opt/godot/godot",
+      projectPath: "/projects/demo",
+      headless: true,
+      outputBufferLines: 1000,
+    });
+    return { manager, killSpy };
+  }
+
+  it("kills the active run_project child before closing the server and exiting", async () => {
+    const { manager, killSpy } = makeManagerWithActiveChild();
+    const closeServer = vi.fn(async () => {});
+    const exit = vi.fn();
+    const shutdown = createShutdown({
+      processManager: manager,
+      closeServer,
+      exit,
+      debugLog: () => {},
+    });
+
+    shutdown("SIGINT");
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+    expect(killSpy).toHaveBeenCalled();
+    expect(closeServer).toHaveBeenCalled();
+  });
+
+  it("still closes the server and exits when no run is active", async () => {
+    const manager = new GodotProcessManager({ spawn: vi.fn() });
+    const closeServer = vi.fn(async () => {});
+    const exit = vi.fn();
+    const shutdown = createShutdown({
+      processManager: manager,
+      closeServer,
+      exit,
+      debugLog: () => {},
+    });
+
+    shutdown("SIGTERM");
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+    expect(closeServer).toHaveBeenCalled();
+  });
+
+  it("still exits even when closing the server rejects", async () => {
+    const { manager, killSpy } = makeManagerWithActiveChild();
+    const closeServer = vi.fn(async () => {
+      throw new Error("close failed");
+    });
+    const exit = vi.fn();
+    const shutdown = createShutdown({
+      processManager: manager,
+      closeServer,
+      exit,
+      debugLog: () => {},
+    });
+
+    shutdown("SIGINT");
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+    expect(killSpy).toHaveBeenCalled();
   });
 });

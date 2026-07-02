@@ -149,7 +149,12 @@ function buildRunArgs(
  */
 export class GodotProcessManager {
   #spawn: SpawnFn;
-  #active?: { child: ManagedChildProcess; output: RingBuffer; errors: RingBuffer };
+  #active?: {
+    child: ManagedChildProcess;
+    output: RingBuffer;
+    errors: RingBuffer;
+    flushPartialLines: () => void;
+  };
 
   constructor(options: { spawn?: SpawnFn } = {}) {
     this.#spawn = options.spawn ?? defaultSpawn;
@@ -167,18 +172,19 @@ export class GodotProcessManager {
     const errors = createRingBuffer(request.outputBufferLines);
     const outAcc = createLineAccumulator((line) => output.push(line));
     const errAcc = createLineAccumulator((line) => errors.push(line));
+    const flushPartialLines = () => {
+      outAcc.flush();
+      errAcc.flush();
+    };
 
     child.stdout?.on("data", (chunk) => outAcc.write(chunk.toString()));
     child.stderr?.on("data", (chunk) => errAcc.write(chunk.toString()));
     child.on("error", (error) => errAcc.write(`[process error] ${error.message}\n`));
     // "close" (not "exit") fires once stdio streams have finished draining,
     // so any trailing partial line is guaranteed to have already arrived.
-    child.on("close", () => {
-      outAcc.flush();
-      errAcc.flush();
-    });
+    child.on("close", flushPartialLines);
 
-    this.#active = { child, output, errors };
+    this.#active = { child, output, errors, flushPartialLines };
     return { pid: child.pid, replacedActive };
   }
 
@@ -189,8 +195,15 @@ export class GodotProcessManager {
 
   stop(): StopOutcome {
     if (!this.#active) return { kind: "not-running" };
-    const { child, output, errors } = this.#active;
+    const { child, output, errors, flushPartialLines } = this.#active;
     killChild(child);
+    // The child's "close" event (which also flushes) is asynchronous and
+    // has not fired yet at this point, but this snapshot is the tail the
+    // caller gets - so flush explicitly first, or a final chunk without a
+    // trailing newline (typical for a process killed mid-write) would be
+    // silently dropped. Flushing twice is safe: flush() is a no-op when no
+    // partial line is pending.
+    flushPartialLines();
     this.#active = undefined;
     return { kind: "stopped", output: output.toArray(), errors: errors.toArray() };
   }
