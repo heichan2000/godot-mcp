@@ -47,15 +47,35 @@ function getCreateSceneTool(deps: ReturnType<typeof makeDeps>) {
   return tool;
 }
 
+function getAddNodeTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createSceneTools(deps);
+  const tool = tools.find((t) => t.name === "add_node");
+  if (!tool) throw new Error("add_node descriptor not found");
+  return tool;
+}
+
 describe("createSceneTools", () => {
-  it("exposes exactly one descriptor named create_scene with project_path/scene_path/root_node_type in its schema", () => {
+  it("exposes create_scene and add_node descriptors with their expected schema keys", () => {
     const deps = makeDeps({});
     const tools = createSceneTools(deps);
 
-    expect(tools).toHaveLength(1);
-    expect(tools[0]!.name).toBe("create_scene");
-    expect(Object.keys(tools[0]!.inputSchema).sort()).toEqual(
+    expect(tools.map((t) => t.name).sort()).toEqual(["add_node", "create_scene"]);
+
+    const createScene = tools.find((t) => t.name === "create_scene")!;
+    expect(Object.keys(createScene.inputSchema).sort()).toEqual(
       ["project_path", "root_node_type", "scene_path"].sort(),
+    );
+
+    const addNode = tools.find((t) => t.name === "add_node")!;
+    expect(Object.keys(addNode.inputSchema).sort()).toEqual(
+      [
+        "project_path",
+        "scene_path",
+        "node_type",
+        "node_name",
+        "parent_node_path",
+        "properties",
+      ].sort(),
     );
   });
 
@@ -289,5 +309,261 @@ describe("createSceneTools", () => {
 
     expect(writeSpy).not.toHaveBeenCalled();
     writeSpy.mockRestore();
+  });
+});
+
+describe("add_node tool", () => {
+  it("calls runOperation with the exact op/params contract, defaulting parent_node_path and properties", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "add_node",
+        result: { scene_path: "res://scenes/hero.tscn", node_name: "Sprite" },
+      },
+    });
+    const tool = getAddNodeTool(deps);
+
+    await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+      },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        godotPath: "/usr/bin/godot",
+        projectPath: root,
+        operationScriptPath: "/dist/operations.gd",
+        operation: "add_node",
+        params: {
+          scene_path: "scenes/hero.tscn",
+          node_type: "Sprite2D",
+          node_name: "Sprite",
+          parent_node_path: "",
+          properties: {},
+        },
+      }),
+    );
+  });
+
+  it("passes an explicit parent_node_path and properties (mixing primitives and var_to_str strings) through untouched", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getAddNodeTool(deps);
+
+    await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+        parent_node_path: "Body",
+        properties: { position: "Vector2(100, 50)", visible: true, z_index: 3 },
+      },
+      {} as never,
+    );
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: {
+          scene_path: "scenes/hero.tscn",
+          node_type: "Sprite2D",
+          node_name: "Sprite",
+          parent_node_path: "Body",
+          properties: { position: "Vector2(100, 50)", visible: true, z_index: 3 },
+        },
+      }),
+    );
+  });
+
+  it("returns success content with the dispatcher's result as structuredContent", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "add_node",
+        result: {
+          scene_path: "res://scenes/hero.tscn",
+          node_type: "Sprite2D",
+          node_name: "Sprite",
+          node_path: "Sprite",
+        },
+      },
+    });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect((result.content[0] as { text: string }).text).toContain("Added node");
+    expect(result.structuredContent).toEqual({
+      scene_path: "res://scenes/hero.tscn",
+      node_type: "Sprite2D",
+      node_name: "Sprite",
+      node_path: "Sprite",
+    });
+  });
+
+  it("rejects an escaping scene_path with a containment error WITHOUT invoking Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: path.join("..", "escape.tscn"),
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.detectGodotPath).not.toHaveBeenCalled();
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured guided error when Godot cannot be resolved, without invoking runOperation", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ resolution: { found: false, candidates: ["/usr/bin/godot"] } });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("suggests checking the class name against ClassDB when node_type is rejected", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "add_node",
+        error: "node_type is not an instantiable Node class: Resource",
+      },
+    });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Resource",
+        node_name: "Bogus",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Resource");
+    expect(text.toLowerCase()).toContain("class reference");
+  });
+
+  it("suggests checking the node path when parent_node_path is not found", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "add_node",
+        error: "parent_node_path not found in scene: Missing/Path",
+      },
+    });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+        parent_node_path: "Missing/Path",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Missing/Path");
+    expect(text.toLowerCase()).toContain("omit parent_node_path");
+  });
+
+  it("suggests checking the property name when a property does not exist on the node", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "add_node",
+        error: "Property does not exist on Sprite2D: not_a_real_property",
+      },
+    });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+        properties: { not_a_real_property: "hi" },
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("not_a_real_property");
+    expect(text).toContain("var_to_str");
+  });
+
+  it("returns a structured error naming both versions on a version mismatch", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "version-mismatch", expectedVersion: 1, actualVersion: 2 },
+    });
+    const tool = getAddNodeTool(deps);
+
+    const result = await tool.handler(
+      {
+        project_path: root,
+        scene_path: "scenes/hero.tscn",
+        node_type: "Sprite2D",
+        node_name: "Sprite",
+      },
+      {} as never,
+    );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("1");
+    expect(text).toContain("2");
   });
 });
