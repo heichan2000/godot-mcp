@@ -357,4 +357,58 @@ describe("pathContainmentErrorResponse", () => {
 
     expect(response.structuredContent.message).toContain("absolute");
   });
+
+  it("tailors possibleSolutions to a root-not-found violation", () => {
+    const missingRoot = path.join(tmpdir(), `godot-mcp-missing-root-${Date.now()}`);
+    let caught: unknown;
+    try {
+      assertInsideRoot(missingRoot, "scene.tscn");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PathContainmentError);
+
+    const response = pathContainmentErrorResponse(caught as PathContainmentError);
+
+    expect(response.structuredContent.possibleSolutions).toEqual([
+      "Confirm project_path points at an existing, accessible directory.",
+    ]);
+  });
+});
+
+describe("resolveDeepestExisting's unexpected-error paths (via assertInsideRoot's injectable realpathSync)", () => {
+  it("rethrows a non-ENOENT/ENOTDIR error raw, without wrapping it as a PathContainmentError", () => {
+    const root = makeRoot();
+    const eaccesError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const realpathSync = (candidate: string) => {
+      if (candidate === path.resolve(root)) return root;
+      throw eaccesError;
+    };
+
+    expect(() => assertInsideRoot(root, "scene.tscn", { realpathSync })).toThrow(eaccesError);
+  });
+
+  it(
+    "rethrows the underlying ENOENT once the walk-up reaches the filesystem/drive root without " +
+      "resolving anything, without wrapping it as a PathContainmentError",
+    () => {
+      const root = makeRoot();
+      let rootCallCount = 0;
+      const enoentError = Object.assign(new Error("no such file"), { code: "ENOENT" });
+      // Succeeds exactly once for the initial root-resolution call (so
+      // assertInsideRoot gets past its own root check), then fails
+      // unconditionally afterward - forcing resolveDeepestExisting's
+      // walk-up to retry every ancestor, all the way to the real
+      // filesystem/drive root, without ever resolving.
+      const realpathSync = (candidate: string) => {
+        if (candidate === path.resolve(root) && rootCallCount === 0) {
+          rootCallCount += 1;
+          return root;
+        }
+        throw enoentError;
+      };
+
+      expect(() => assertInsideRoot(root, "scene.tscn", { realpathSync })).toThrow(enoentError);
+    },
+  );
 });

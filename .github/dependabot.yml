@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # npm dependencies (dependencies + devDependencies in package.json).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Batches routine devDependency bumps into one PR instead of one per
+      # package; runtime dependencies (@modelcontextprotocol/sdk, zod) are
+      # deliberately left out of this group so each gets its own PR and
+      # review, matching godot-prd.md §7.6's pinned-SDK-version stance.
+      dev-dependencies:
+        dependency-type: "development"
+
+  # GitHub Actions used by .github/workflows/ci.yml (actions/checkout,
+  # actions/setup-node, ...) - kept up to date the same way as npm deps.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
