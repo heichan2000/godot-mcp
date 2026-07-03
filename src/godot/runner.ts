@@ -310,6 +310,70 @@ export async function runGodotImport(
   };
 }
 
+export interface RunCheckOnlyOptions {
+  godotPath: string;
+  projectPath: string;
+  /** res:// path of the script to check (see godot/script-errors.ts's toResourcePath-style helpers in tools/readback.ts). */
+  scriptPath: string;
+  /** Kills a hung check after this many ms; defaults to DEFAULT_OPERATION_TIMEOUT_MS (a --check-only run is as cheap as a single dispatcher op). */
+  timeoutMs?: number;
+}
+
+export type RunCheckOnlyResult =
+  | { kind: "completed"; exitCode: number | null; stdout: string; stderr: string }
+  | { kind: "spawn-error"; message: string }
+  | { kind: "timeout"; timeoutMs: number };
+
+/**
+ * Runs `godot --headless --path <project> --check-only --script <scriptPath>`
+ * to parse a single GDScript file for compile errors without running it.
+ * This is a plain Godot invocation, not a dispatcher call - no
+ * `--script operations.gd`, no JSON result marker, no version handshake -
+ * so like `runGodotImport` it shares only the exec/timeout seam and error
+ * mapping with `runOperation`, not its protocol parsing.
+ *
+ * Deliberately does not itself decide success or failure from the exit
+ * code: `--check-only` exits nonzero whenever the script has an error, which
+ * is an entirely expected, parseable outcome - not a sign Godot itself
+ * failed to run. Conflating the two would be exactly the silent-failure
+ * trap godot-prd.md §6.2 calls out. Every non-exec-failure outcome comes
+ * back as `"completed"` with the raw exit code, stdout, and stderr;
+ * `tools/readback.ts` is the one place that interprets `stderr` (via
+ * `godot/script-errors.ts`'s best-effort regex parse) to build the
+ * `{ errors, raw }` result - `raw` always gets this `stderr` untouched, hit
+ * or miss.
+ */
+export async function runCheckOnly(
+  options: RunCheckOnlyOptions,
+  deps: RunOperationDeps = defaultDeps,
+): Promise<RunCheckOnlyResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
+
+  let execResult: RunnerExecResult;
+  try {
+    execResult = await deps.execFile(
+      options.godotPath,
+      ["--headless", "--path", options.projectPath, "--check-only", "--script", options.scriptPath],
+      { timeoutMs },
+    );
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      return { kind: "timeout", timeoutMs };
+    }
+    return {
+      kind: "spawn-error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
+    kind: "completed",
+    exitCode: execResult.exitCode,
+    stdout: execResult.stdout,
+    stderr: execResult.stderr,
+  };
+}
+
 /** This module's own directory - operations.gd ships alongside it in both src/godot (dev/test) and dist/ (built, bundled into a single file). */
 const OWN_MODULE_URL = import.meta.url;
 

@@ -7,6 +7,7 @@ import {
   DISPATCHER_VERSION,
   assertOperationsScriptExists,
   resolveOperationsScriptPath,
+  runCheckOnly,
   runGodotImport,
   runOperation,
   type RunnerExecFile,
@@ -397,5 +398,100 @@ describe("runGodotImport", () => {
     const result = await runGodotImport(baseOptions, { execFile });
 
     expect(result).toEqual({ kind: "timeout", timeoutMs: DEFAULT_IMPORT_TIMEOUT_MS });
+  });
+});
+
+describe("runCheckOnly", () => {
+  const baseOptions = {
+    godotPath: "/usr/bin/godot",
+    projectPath: "/projects/demo",
+    scriptPath: "res://scripts/broken.gd",
+  };
+
+  it("invokes execFile with the exact argv contract: headless, path, check-only, script - and the default operation timeout", async () => {
+    const execFile = makeExecFile(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await runCheckOnly(baseOptions, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(
+      "/usr/bin/godot",
+      [
+        "--headless",
+        "--path",
+        "/projects/demo",
+        "--check-only",
+        "--script",
+        "res://scripts/broken.gd",
+      ],
+      { timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS },
+    );
+  });
+
+  it("passes a custom timeoutMs through to execFile when provided", async () => {
+    const execFile = makeExecFile(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    await runCheckOnly({ ...baseOptions, timeoutMs: 5_000 }, { execFile });
+
+    expect(execFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      timeoutMs: 5_000,
+    });
+  });
+
+  it("returns a completed result with the raw exit code, stdout, and stderr on a script with no errors (exit 0, empty stderr)", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: "Godot Engine v4.6.3.stable\n\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const result = await runCheckOnly(baseOptions, { execFile });
+
+    expect(result).toEqual({
+      kind: "completed",
+      exitCode: 0,
+      stdout: "Godot Engine v4.6.3.stable\n\n",
+      stderr: "",
+    });
+  });
+
+  it("returns a completed result (not an error kind) even though --check-only exits nonzero on a broken script - the caller parses stderr, not the exit code", async () => {
+    const execFile = makeExecFile(async () => ({
+      stdout: "Godot Engine v4.6.3.stable\n\n",
+      stderr:
+        'SCRIPT ERROR: Parse Error: Expected expression for variable initial value after "=".\n' +
+        "   at: GDScript::reload (res://scripts/broken.gd:4)\n",
+      exitCode: 1,
+    }));
+
+    const result = await runCheckOnly(baseOptions, { execFile });
+
+    expect(result.kind).toBe("completed");
+    if (result.kind === "completed") {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("SCRIPT ERROR");
+    }
+  });
+
+  it("returns a spawn-error result when execFile rejects (e.g. Godot binary missing)", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw new Error("ENOENT: spawn /usr/bin/godot");
+    });
+
+    const result = await runCheckOnly(baseOptions, { execFile });
+
+    expect(result.kind).toBe("spawn-error");
+    if (result.kind === "spawn-error") {
+      expect(result.message).toContain("ENOENT");
+    }
+  });
+
+  it("returns a timeout result (not spawn-error) when execFile rejects with Node's timeout error shape", async () => {
+    const execFile: RunnerExecFile = vi.fn(async () => {
+      throw makeNodeTimeoutError();
+    });
+
+    const result = await runCheckOnly({ ...baseOptions, timeoutMs: 5_000 }, { execFile });
+
+    expect(result).toEqual({ kind: "timeout", timeoutMs: 5_000 });
   });
 });

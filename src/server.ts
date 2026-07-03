@@ -7,6 +7,7 @@ import type { GodotProcessManager } from "./godot/process.js";
 import { registerAll } from "./registry.js";
 import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
 import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
+import { createReadbackTools, type ReadbackToolsDeps } from "./tools/readback.js";
 import { createRunTools, defaultProcessManager, type RunToolsDeps } from "./tools/run.js";
 import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 import { createUidTools, type UidToolsDeps } from "./tools/uid.js";
@@ -21,6 +22,7 @@ export interface CreateServerOptions {
   projectToolsDeps?: ProjectToolsDeps;
   runToolsDeps?: RunToolsDeps;
   uidToolsDeps?: UidToolsDeps;
+  readbackToolsDeps?: ReadbackToolsDeps;
   /**
    * Overrides the shared minGodotVersion gate (see registry.ts) used for
    * get_uid/update_project_uids. Defaults to a fresh, production
@@ -43,6 +45,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     ...createProjectTools(options.projectToolsDeps),
     ...createRunTools(options.runToolsDeps),
     ...createUidTools(options.uidToolsDeps),
+    ...createReadbackTools(options.readbackToolsDeps),
   ];
   registerAll(server, tools, { versionGate: options.versionGate });
   return server;
