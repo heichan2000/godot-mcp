@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { createErrorResponse } from "../errors.js";
-import { hasImportCache } from "../godot/cache.js";
+import { coldImportCacheError, hasImportCache } from "../godot/cache.js";
 import {
   assertInsideRoot,
   detectGodotPath,
@@ -37,27 +37,6 @@ const defaultDeps: SceneToolsDeps = {
   operationsScriptPath: resolveOperationsScriptPath(),
   hasImportCache,
 };
-
-/**
- * Guided error for an asset-dependent op (currently just `load_sprite`)
- * called against a project with no built import cache. Headless Godot
- * cannot `load()` an unimported asset - see `hasImportCache` in
- * `../godot/cache.js` for the empirically-verified marker this checks -
- * and this op never imports implicitly, so callers always see this error
- * instead of a slow, confusing Godot failure.
- */
-function coldImportCacheError(projectPath: string) {
-  return createErrorResponse({
-    message:
-      `Project at "${projectPath}" has no built Godot import cache yet ` +
-      "(.godot/imported/ is missing or empty). Headless Godot cannot load a texture or other " +
-      "importable asset until the project's assets have been imported at least once.",
-    possibleSolutions: [
-      "Run import_project with this project_path first to build the cache, then retry.",
-      "If you just added or changed asset files, re-run import_project to refresh the cache.",
-    ],
-  });
-}
 
 /**
  * Builds guided `possibleSolutions` for an `operation-error` result by

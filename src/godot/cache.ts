@@ -1,5 +1,6 @@
 import { existsSync as existsSyncFs, readdirSync as readdirSyncFs } from "node:fs";
 import path from "node:path";
+import { createErrorResponse, type ErrorResponse } from "../errors.js";
 
 export interface CacheCheckOptions {
   /** Overridable for tests; defaults to the real filesystem. */
@@ -55,4 +56,31 @@ export function hasImportCache(projectPath: string, options: CacheCheckOptions =
   } catch {
     return false;
   }
+}
+
+/**
+ * Guided error for any asset-dependent tool called against a project with no
+ * built import cache. Headless Godot cannot `load()` an unimported asset
+ * (see `hasImportCache`'s doc comment for the empirically-verified marker
+ * this checks), and no such tool imports implicitly, so every caller shows
+ * this instead of a slow, confusing Godot failure. Shared by
+ * `tools/scene.ts`'s `load_sprite` and `tools/uid.ts`'s `get_uid` - both
+ * need the project scanned/imported at least once before their underlying
+ * Godot call can succeed (`load_sprite` to `load()` a texture,
+ * `get_uid` because `ResourceLoader.get_resource_uid` only recognizes a
+ * uid:// once a project scan - which `--import` triggers - has read it off
+ * disk, whether from a `.uid` sidecar or an embedded `uid=` header).
+ */
+export function coldImportCacheError(projectPath: string): ErrorResponse {
+  return createErrorResponse({
+    message:
+      `Project at "${projectPath}" has no built Godot import cache yet ` +
+      "(.godot/imported/ is missing or empty). Headless Godot cannot load a texture or other " +
+      "importable asset, or recognize a resource's UID, until the project has been imported at " +
+      "least once.",
+    possibleSolutions: [
+      "Run import_project with this project_path first to build the cache, then retry.",
+      "If you just added or changed asset files, re-run import_project to refresh the cache.",
+    ],
+  });
 }

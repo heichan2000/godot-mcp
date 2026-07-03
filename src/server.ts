@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
+import type { GodotVersionGate } from "./godot/version-gate.js";
 import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./godot/runner.js";
 import type { GodotProcessManager } from "./godot/process.js";
 import { registerAll } from "./registry.js";
@@ -8,6 +9,7 @@ import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
 import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
 import { createRunTools, defaultProcessManager, type RunToolsDeps } from "./tools/run.js";
 import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
+import { createUidTools, type UidToolsDeps } from "./tools/uid.js";
 
 const SERVER_NAME = "godot-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -18,6 +20,14 @@ export interface CreateServerOptions {
   sceneToolsDeps?: SceneToolsDeps;
   projectToolsDeps?: ProjectToolsDeps;
   runToolsDeps?: RunToolsDeps;
+  uidToolsDeps?: UidToolsDeps;
+  /**
+   * Overrides the shared minGodotVersion gate (see registry.ts) used for
+   * get_uid/update_project_uids. Defaults to a fresh, production
+   * `createGodotVersionGate()` - constructing the default does not itself
+   * probe Godot, so startup still succeeds with no Godot installed.
+   */
+  versionGate?: GodotVersionGate;
 }
 
 /**
@@ -32,8 +42,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     ...createSceneTools(options.sceneToolsDeps),
     ...createProjectTools(options.projectToolsDeps),
     ...createRunTools(options.runToolsDeps),
+    ...createUidTools(options.uidToolsDeps),
   ];
-  registerAll(server, tools);
+  registerAll(server, tools, { versionGate: options.versionGate });
   return server;
 }
 

@@ -81,6 +81,10 @@ func dispatch(operation: String, params: Dictionary) -> Dictionary:
 			return op_save_scene(params)
 		"export_mesh_library":
 			return op_export_mesh_library(params)
+		"get_uid":
+			return op_get_uid(params)
+		"update_project_uids":
+			return op_update_project_uids(params)
 		_:
 			return { "ok": false, "error": "Unknown operation: %s" % operation }
 
@@ -461,6 +465,169 @@ func op_export_mesh_library(params: Dictionary) -> Dictionary:
 			"item_names": item_names,
 		},
 	}
+
+## get_uid(file_path: String)
+## Returns the resource UID (formatted uid://... via ResourceUID.id_to_text)
+## already assigned to the resource at file_path. Requires Godot >= 4.4 (the
+## TS layer's minGodotVersion gate enforces this centrally at call time, not
+## here) - ResourceLoader.get_resource_uid only returns a meaningful id once
+## a resource has actually been assigned one. Scenes/resources authored (or
+## last saved) before 4.4 may have no UID yet; op_update_project_uids
+## backfills one by resaving.
+func op_get_uid(params: Dictionary) -> Dictionary:
+	if not params.has("file_path") or typeof(params["file_path"]) != TYPE_STRING:
+		return { "ok": false, "error": "Missing or invalid required param: file_path" }
+	var file_path: String = params["file_path"]
+	if file_path.is_empty():
+		return { "ok": false, "error": "file_path must not be empty." }
+	# Defense in depth: see the matching comment in op_create_scene.
+	if file_path.contains(".."):
+		return { "ok": false, "error": "file_path must not contain '..' segments: %s" % file_path }
+
+	var res_path := to_res_path(file_path)
+	if not FileAccess.file_exists(res_path):
+		return { "ok": false, "error": "File does not exist at %s." % res_path }
+
+	var uid_id := ResourceLoader.get_resource_uid(res_path)
+	if uid_id == ResourceUID.INVALID_ID:
+		return { "ok": false, "error": "No UID is assigned to resource at %s yet. Run update_project_uids first." % res_path }
+
+	return { "ok": true, "result": { "file_path": res_path, "uid": ResourceUID.id_to_text(uid_id) } }
+
+## update_project_uids()
+## Ensures every .tscn/.tres text resource under res:// (skipping
+## dot-prefixed directories like .godot and .git) has a uid= embedded in its
+## header line, generating and writing one in place for any that don't.
+##
+## IMPORTANT - empirically verified against Godot 4.6.3 (see task-9 report):
+## ResourceSaver.save() run outside the actual editor process (i.e. from a
+## plain --script/SceneTree run, which is how this whole dispatcher is
+## invoked) does NOT embed a uid= into a resaved scene/resource, even when
+## the project's import cache already exists - contrary to what the "the
+## editor will add them automatically as you save" upgrade guidance implies.
+## A ResourceLoader.load() -> ResourceSaver.save() round trip (this op's
+## first implementation) was verified to leave the file just as UID-less as
+## before. So this op does NOT use ResourceSaver at all: it reads each
+## file's single-line header (e.g. `[gd_scene load_steps=2 format=3]`) as
+## plain text, and - only when that line has no `uid=` attribute yet -
+## generates a fresh id via ResourceUID.create_id() and inserts
+## ` uid="uid://..."` immediately before the closing `]`, rewriting just
+## that one line. This is a minimal, targeted text edit rather than a full
+## resave, which also sidesteps ResourceSaver's independent tendency to
+## renumber/restructure the rest of the file (e.g. load_steps, sub-resource
+## IDs) - a smaller diff than an in-editor save would produce.
+##
+## A resource's uid= header is only picked up into Godot's project-wide UID
+## registry (the same registry get_uid's ResourceLoader.get_resource_uid
+## queries) by a project scan - which happens during `--import` (or opening
+## the editor), never during a plain --script run like this one. So the TS
+## handler (tools/uid.ts) runs `godot --headless --import` again right
+## after this op succeeds, so a newly-embedded uid is immediately visible to
+## the very next get_uid call rather than requiring the caller to separately
+## remember to run import_project.
+##
+## Best-effort: a file that can't be read/parsed/written is recorded under
+## "failed" rather than aborting the whole walk, so one bad file doesn't
+## block progress on the rest of the project. "already_had_uid" lists files
+## left untouched because they already had a uid= (no unnecessary diff).
+func op_update_project_uids(params: Dictionary) -> Dictionary:
+	var targets: Array = []
+	collect_resave_targets("res://", targets)
+
+	var touched: Array = []
+	var already_had_uid: Array = []
+	var failed: Array = []
+	for path_variant in targets:
+		var res_path: String = path_variant
+		match ensure_uid_header(res_path):
+			"touched":
+				touched.append(res_path)
+			"already_had_uid":
+				already_had_uid.append(res_path)
+			_:
+				failed.append(res_path)
+
+	return {
+		"ok": true,
+		"result": {
+			"touched": touched,
+			"touched_count": touched.size(),
+			"already_had_uid": already_had_uid,
+			"failed": failed,
+		},
+	}
+
+## Reads res_path's header line (the first line of a .tscn/.tres, e.g.
+## `[gd_scene load_steps=2 format=3]` or `[gd_resource type="..." format=3]`)
+## and, if it does not already declare a `uid=` attribute, generates a new
+## one via ResourceUID and rewrites just that line in place. Returns
+## "already_had_uid" (no write happened), "touched" (uid was added and
+## written), or "failed" (the file could not be read, did not look like a
+## recognized .tscn/.tres header, or could not be written back).
+func ensure_uid_header(res_path: String) -> String:
+	var in_file := FileAccess.open(res_path, FileAccess.READ)
+	if in_file == null:
+		return "failed"
+	var content := in_file.get_as_text()
+	in_file.close()
+
+	var newline_index := content.find("\n")
+	var header_line := content if newline_index == -1 else content.substr(0, newline_index)
+	var rest := "" if newline_index == -1 else content.substr(newline_index)
+
+	if not (header_line.begins_with("[gd_scene") or header_line.begins_with("[gd_resource")):
+		return "failed"
+	if header_line.contains("uid="):
+		return "already_had_uid"
+
+	var closing_bracket_index := header_line.rfind("]")
+	if closing_bracket_index == -1:
+		return "failed"
+
+	var new_uid := ResourceUID.create_id()
+	var uid_text := ResourceUID.id_to_text(new_uid)
+	var new_header := header_line.substr(0, closing_bracket_index) + " uid=\"%s\"]" % uid_text
+	var new_content := new_header + rest
+
+	var out_file := FileAccess.open(res_path, FileAccess.WRITE)
+	if out_file == null:
+		return "failed"
+	out_file.store_string(new_content)
+	out_file.close()
+
+	# Registers the mapping in this same process's in-memory ResourceUID
+	# registry too - harmless, and lets a later op in the same dispatcher
+	# invocation (there is none today, but keeps this op internally
+	# consistent) see it without needing a rescan.
+	ResourceUID.add_id(new_uid, res_path)
+	return "touched"
+
+## Recursively collects every .tscn/.tres file under dir_path (res://
+## paths) into out, skipping dot-prefixed directories (.godot, .git, ...) -
+## those are never user resources and .godot in particular holds Godot's own
+## generated cache, not project content to touch. Binary .res resources are
+## deliberately not included: this op's header-patching approach only works
+## on the single-line text header .tscn/.tres files have.
+func collect_resave_targets(dir_path: String, out: Array) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry == "." or entry == "..":
+			entry = dir.get_next()
+			continue
+		var full_path := dir_path.path_join(entry)
+		if dir.current_is_dir():
+			if not entry.begins_with("."):
+				collect_resave_targets(full_path, out)
+		else:
+			var ext := entry.get_extension().to_lower()
+			if ext == "tscn" or ext == "tres":
+				out.append(full_path)
+		entry = dir.get_next()
+	dir.list_dir_end()
 
 ## True only if type_name names a Node-derived (or exactly Node) class that
 ## can be instantiated directly: known to ClassDB, is_parent_class of "Node"

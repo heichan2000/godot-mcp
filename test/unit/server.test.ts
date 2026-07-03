@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
@@ -10,8 +13,20 @@ import {
   type ManagedChildProcess,
   type SpawnFn,
 } from "../../src/godot/process.js";
+import type { GodotVersionGate, GodotVersionGateCheck } from "../../src/godot/version-gate.js";
+import type { runOperation, RunOperationResult } from "../../src/godot/runner.js";
 
-async function connectedClient(resolution: GodotPathResolution) {
+function fakeVersionGate(result: GodotVersionGateCheck): GodotVersionGate {
+  return { checkMinVersion: vi.fn(async () => result) };
+}
+
+async function connectedClient(
+  resolution: GodotPathResolution,
+  options: {
+    versionGate?: GodotVersionGate;
+    uidRunOperation?: typeof runOperation;
+  } = {},
+) {
   const server = createServer({
     editorToolsDeps: {
       loadConfig: (): Config => ({ godotPath: undefined, debug: false, outputBufferLines: 1000 }),
@@ -31,6 +46,28 @@ async function connectedClient(resolution: GodotPathResolution) {
       operationsScriptPath: "/dist/operations.gd",
       hasImportCache: vi.fn(() => true),
     },
+    uidToolsDeps: {
+      loadConfig: (): Config => ({ godotPath: undefined, debug: false, outputBufferLines: 1000 }),
+      detectGodotPath: () => resolution,
+      runOperation:
+        options.uidRunOperation ??
+        vi.fn(async (): Promise<RunOperationResult> => ({
+          kind: "success",
+          version: 1,
+          operation: "get_uid",
+          result: { file_path: "res://scripts/print_marker.gd", uid: "uid://48o0gvc1i7pu" },
+        })),
+      runGodotImport: vi.fn(async () => ({
+        kind: "completed" as const,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1,
+      })),
+      hasImportCache: vi.fn(() => true),
+      operationsScriptPath: "/dist/operations.gd",
+    },
+    versionGate: options.versionGate,
   });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -49,6 +86,70 @@ describe("createServer (stdio MCP wiring)", () => {
 
     expect(tools.map((t) => t.name)).toContain("get_godot_version");
     expect(tools.map((t) => t.name)).toContain("create_scene");
+  });
+
+  it("always lists get_uid and update_project_uids, describing the Godot >= 4.4 requirement, even with no Godot installed", async () => {
+    const { client } = await connectedClient({ found: false, candidates: [] });
+
+    const { tools } = await client.listTools();
+
+    const getUid = tools.find((t) => t.name === "get_uid");
+    const updateProjectUids = tools.find((t) => t.name === "update_project_uids");
+    expect(getUid).toBeDefined();
+    expect(updateProjectUids).toBeDefined();
+    expect(getUid?.description).toContain("4.4");
+    expect(updateProjectUids?.description).toContain("4.4");
+  });
+
+  it("blocks get_uid over the wire with a structured error when the version gate reports Godot is too old, WITHOUT touching the filesystem for containment", async () => {
+    // A version-gate block happens before the handler's own assertInsideRoot
+    // check, so this uses a project_path that doesn't even exist on disk -
+    // if the gate weren't checked first, this would fail on containment
+    // instead, for the wrong reason.
+    const { client } = await connectedClient(
+      { found: true, path: "/opt/godot/godot", source: "configured" },
+      {
+        versionGate: fakeVersionGate({
+          kind: "blocked",
+          error: {
+            isError: true,
+            content: [{ type: "text", text: "requires Godot >= 4.4" }],
+            structuredContent: {
+              message: "requires Godot >= 4.4",
+              possibleSolutions: ["Install Godot 4.4 or newer."],
+            },
+          },
+        }),
+      },
+    );
+
+    const result = await client.callTool({
+      name: "get_uid",
+      arguments: { project_path: "/projects/does-not-exist", file_path: "scripts/foo.gd" },
+    });
+
+    expect(result.isError).toBe(true);
+    const structured = result.structuredContent as { message: string };
+    expect(structured.message).toContain("4.4");
+  });
+
+  it("passes get_uid through over the wire when the version gate reports pass", async () => {
+    const projectPath = mkdtempSync(path.join(tmpdir(), "godot-mcp-server-test-"));
+    const { client } = await connectedClient(
+      { found: true, path: "/opt/godot/godot", source: "configured" },
+      { versionGate: fakeVersionGate({ kind: "pass" }) },
+    );
+
+    const result = await client.callTool({
+      name: "get_uid",
+      arguments: { project_path: projectPath, file_path: "scripts/print_marker.gd" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      file_path: "res://scripts/print_marker.gd",
+      uid: "uid://48o0gvc1i7pu",
+    });
   });
 
   it("returns the Godot version over the wire when resolution succeeds", async () => {
