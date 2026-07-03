@@ -57,17 +57,23 @@ export function freshSampleProject(): string {
  * Probes GODOT_PATH's actual Godot version ONCE (via top-level await - safe
  * here since this module is ESM and only ever imported by test files that
  * already gate everything else on `hasGodot`), so every integration test
- * that needs to branch on "is this CI leg's Godot < 4.4" (Resource UIDs,
- * gated by tools/uid.ts's MIN_UID_GODOT_VERSION, only exist from 4.4
- * onward) can import a single already-resolved answer instead of each
- * re-probing its own copy.
+ * that needs to branch on "is this CI leg's Godot < 4.4" can import a single
+ * already-resolved answer instead of each re-probing its own copy.
+ *
+ * Note this only gates *script/scene* UIDs, which are assigned via the .uid
+ * sidecar mechanism added in tools/uid.ts's MIN_UID_GODOT_VERSION (4.4).
+ * Resource UIDs for *imported* resources (textures, meshes, etc.) have
+ * existed since Godot 4.0 and are NOT gated by this flag - see
+ * readback.integration.test.ts's list_resources cases, which assert a
+ * warm-imported texture's uid is present on every Godot version in the
+ * matrix.
  *
  * This exists because the CI matrix (godot-prd.md §9, Task 12's review
  * carried into Task 13) deliberately runs integration on one Godot version
- * below 4.4 and one at/above it, specifically so both halves of
- * UID-dependent behavior - the version-gate REJECTION path, and
- * list_resources' "uid gracefully absent" path - get exercised by a real CI
- * leg rather than only ever simulated with a fake version.
+ * below 4.4 and one at/above it, specifically so the version-gate REJECTION
+ * path (get_uid/update_project_uids being refused below 4.4 - see
+ * version-gate.integration.test.ts) gets exercised by a real CI leg rather
+ * than only ever simulated with a fake version.
  */
 export const godotVersionInfo: { version: string; isBelowUidMinVersion: boolean } | null = hasGodot
   ? await (async () => {

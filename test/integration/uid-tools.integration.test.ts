@@ -55,17 +55,21 @@ const UID_FORMAT = /^uid:\/\/[0-9a-z]+$/;
  * This whole suite calls createUidTools' handlers DIRECTLY, bypassing
  * registerAll's minGodotVersion gate (see version-gate.integration.test.ts
  * for gate-rejection coverage) - it exists to verify the UID ops'
- * underlying behavior, which requires Godot's actual Resource UID system
- * (introduced in 4.4 - see tools/uid.ts's MIN_UID_GODOT_VERSION). On a CI
- * matrix leg running an older Godot (deliberately included so the version
- * gate's REJECTION path and list_resources' "uid gracefully absent" path
- * get real coverage - see godot-prd.md §9 / Task 12's review), none of
- * these assertions can hold, so the suite is skipped here - loudly, not
- * silently - rather than failing on an assumption this suite was never
- * meant to test. This is the "legitimately depends on >=4.4 behavior, skip
- * loudly" case the Task 13 brief calls out; it does not represent lost
- * coverage; the gate-rejection and uid-graceful-absence paths are each
- * covered elsewhere specifically so this version leg isn't a blind spot.
+ * underlying behavior, which requires the .uid sidecar mechanism for
+ * scripts/scenes (introduced in 4.4 - see tools/uid.ts's
+ * MIN_UID_GODOT_VERSION). Note this is narrower than "Resource UIDs" in
+ * general: *imported* resources (textures, meshes, etc.) have had Resource
+ * UIDs since Godot 4.0 - that path is exercised regardless of version by
+ * readback.integration.test.ts's list_resources cases, not skipped here. On
+ * a CI matrix leg running an older Godot (deliberately included so the
+ * version gate's REJECTION path gets real coverage - see godot-prd.md §9 /
+ * Task 12's review), none of these script/scene-UID assertions can hold, so
+ * the suite is skipped here - loudly, not silently - rather than failing on
+ * an assumption this suite was never meant to test. This is the
+ * "legitimately depends on >=4.4 behavior, skip loudly" case the Task 13
+ * brief calls out; it does not represent lost coverage; the gate-rejection
+ * path is covered elsewhere specifically so this version leg isn't a blind
+ * spot.
  */
 const belowUidMinVersion = hasGodot && godotVersionInfo!.isBelowUidMinVersion;
 if (belowUidMinVersion) {

@@ -14,8 +14,7 @@ import {
 import { createProjectTools } from "../../src/tools/project.js";
 import { createReadbackTools } from "../../src/tools/readback.js";
 import { createSceneTools } from "../../src/tools/scene.js";
-import { MIN_UID_GODOT_VERSION } from "../../src/tools/uid.js";
-import { freshSampleProject, godotPath, godotVersionInfo, hasGodot } from "./support.js";
+import { freshSampleProject, godotPath, hasGodot } from "./support.js";
 
 interface SceneTreeNode {
   name: string;
@@ -422,8 +421,7 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
     }
   }, 60_000);
 
-  it("an unimported texture does not appear on a cold project (no error), but does after import_project - with a uid on Godot >= 4.4, or gracefully without one below that", async () => {
-    const belowUidMinVersion = godotVersionInfo!.isBelowUidMinVersion;
+  it("an unimported texture does not appear on a cold project (no error), but does after import_project - with a real uid, since imported-resource UIDs have existed since Godot 4.0", async () => {
     const projectPath = freshSampleProject();
     expect(existsSync(path.join(projectPath, ".godot"))).toBe(false);
     const readbackTools = makeReadbackTools();
@@ -458,19 +456,16 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
     const sprite = warmStructured.resources.find((r) => r.path === "res://textures/sprite.png");
     expect(sprite).toBeDefined();
     expect(sprite!.type).toBe("CompressedTexture2D");
-    if (belowUidMinVersion) {
-      console.warn(
-        `[list_resources] probed Godot is below ${MIN_UID_GODOT_VERSION}: asserting uid is ` +
-          "gracefully absent rather than an empty/invalid string or an error.",
-      );
-      expect(sprite!.uid).toBeUndefined();
-    } else {
-      expect(sprite!.uid).toMatch(/^uid:\/\/[0-9a-z]+$/);
-    }
+    // Imported resources (like this texture) have had Resource UIDs since
+    // Godot 4.0 - unlike scripts/scenes, whose UIDs are only assigned via the
+    // .uid sidecar mechanism added in MIN_UID_GODOT_VERSION (4.4, see
+    // tools/uid.ts). So a warm-imported texture's uid is expected to be
+    // present and well-formed on every Godot version in the CI matrix, not
+    // just >= 4.4.
+    expect(sprite!.uid).toMatch(/^uid:\/\/[0-9a-z]+$/);
   }, 90_000);
 
   it("type filter narrows to exactly the matching subclass (Texture2D matches CompressedTexture2D)", async () => {
-    const belowUidMinVersion = godotVersionInfo!.isBelowUidMinVersion;
     const projectPath = freshSampleProject();
     const readbackTools = makeReadbackTools();
     const projectTools = makeProjectTools();
@@ -487,17 +482,17 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
 
     expect(result.isError).toBeFalsy();
     const structured = result.structuredContent as { resources: ListedResource[] };
-    // uid is present (a real uid:// string) on Godot >= 4.4, and gracefully
-    // absent (never an error, never an empty placeholder) below that - see
-    // isBelowUidMinVersion's doc comment.
+    // uid is present (a real uid:// string) on every Godot version in the
+    // matrix: imported resources (like this texture) have had Resource UIDs
+    // since Godot 4.0, unlike scripts/scenes, whose UIDs depend on the .uid
+    // sidecar mechanism added in MIN_UID_GODOT_VERSION (4.4, see
+    // tools/uid.ts).
     expect(structured.resources).toEqual([
-      belowUidMinVersion
-        ? { path: "res://textures/sprite.png", type: "CompressedTexture2D" }
-        : {
-            path: "res://textures/sprite.png",
-            type: "CompressedTexture2D",
-            uid: expect.any(String),
-          },
+      {
+        path: "res://textures/sprite.png",
+        type: "CompressedTexture2D",
+        uid: expect.any(String),
+      },
     ]);
   }, 90_000);
 
