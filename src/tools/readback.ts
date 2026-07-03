@@ -198,6 +198,15 @@ export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): Tool
         const sceneText = deps.readFile(resolvedSceneAbsolute);
         const referenced = extractSceneScriptPaths(sceneText);
 
+        // Defense in depth (see assertInsideRoot's other call sites): a
+        // path parsed out of file content, not a direct caller-supplied
+        // param, still gets the same containment check before use. Not
+        // deduped and not existence-checked here - a scene referencing the
+        // same script twice runs the check twice (harmless, if slightly
+        // redundant), and a scene referencing a script that's gone missing
+        // on disk simply flows into runCheckOnly and gets whatever Godot's
+        // stderr says (a different, unparsed shape - "best effort" applies
+        // here too, and raw still carries it).
         for (const resPath of referenced) {
           try {
             assertInsideRoot(project_path, fromResourcePath(resPath));
