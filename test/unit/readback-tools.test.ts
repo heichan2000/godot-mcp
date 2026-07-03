@@ -113,13 +113,20 @@ function getReadNodePropertiesTool(deps: ReturnType<typeof makeDeps>) {
   return tool;
 }
 
+function getListResourcesTool(deps: ReturnType<typeof makeDeps>) {
+  const tools = createReadbackTools(deps);
+  const tool = tools.find((t) => t.name === "list_resources");
+  if (!tool) throw new Error("list_resources descriptor not found");
+  return tool;
+}
+
 describe("createReadbackTools", () => {
-  it("exposes get_script_errors, get_scene_tree, and read_node_properties with their expected schema keys", () => {
+  it("exposes get_script_errors, get_scene_tree, read_node_properties, and list_resources with their expected schema keys", () => {
     const deps = makeDeps({});
     const tools = createReadbackTools(deps);
 
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["get_script_errors", "get_scene_tree", "read_node_properties"].sort(),
+      ["get_script_errors", "get_scene_tree", "read_node_properties", "list_resources"].sort(),
     );
 
     const getScriptErrors = tools.find((t) => t.name === "get_script_errors")!;
@@ -136,6 +143,9 @@ describe("createReadbackTools", () => {
     expect(Object.keys(readNodeProperties.inputSchema).sort()).toEqual(
       ["project_path", "scene_path", "node_path", "properties"].sort(),
     );
+
+    const listResources = tools.find((t) => t.name === "list_resources")!;
+    expect(Object.keys(listResources.inputSchema).sort()).toEqual(["project_path", "type"].sort());
   });
 
   it("rejects a call with neither scene_path nor script_path, without invoking Godot", async () => {
@@ -802,6 +812,146 @@ describe("read_node_properties tool", () => {
       { project_path: root, scene_path: "scenes/hero.tscn", node_path: "Hero" },
       {} as never,
     );
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("60000");
+  });
+});
+
+describe("list_resources tool", () => {
+  it("returns a structured guided error when Godot cannot be resolved, without invoking runOperation", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({ resolution: { found: false, candidates: ["/usr/bin/godot"] } });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    expect(deps.runOperation).not.toHaveBeenCalled();
+  });
+
+  it("calls runOperation with the exact op/params contract, omitting type when not provided", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "list_resources",
+        result: { resources: [] },
+      },
+    });
+    const tool = getListResourcesTool(deps);
+
+    await tool.handler({ project_path: root }, {} as never);
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        godotPath: "/usr/bin/godot",
+        projectPath: root,
+        operationScriptPath: "/dist/operations.gd",
+        operation: "list_resources",
+        params: {},
+      }),
+    );
+  });
+
+  it("passes an explicit type filter through untouched", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({});
+    const tool = getListResourcesTool(deps);
+
+    await tool.handler({ project_path: root, type: "Texture2D" }, {} as never);
+
+    expect(deps.runOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { type: "Texture2D" } }),
+    );
+  });
+
+  it("returns success content with the dispatcher's resources array as structuredContent", async () => {
+    const root = makeRoot();
+    const resources = [
+      { path: "res://scenes/hero.tscn", type: "PackedScene" },
+      { path: "res://textures/sprite.png", type: "CompressedTexture2D", uid: "uid://abc123" },
+    ];
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "success",
+        version: 1,
+        operation: "list_resources",
+        result: { resources },
+      },
+    });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ resources });
+  });
+
+  it("does not require project_path containment checks beyond resolution (no sub-path param exists)", () => {
+    const deps = makeDeps({});
+    const tool = getListResourcesTool(deps);
+
+    expect(Object.keys(tool.inputSchema).sort()).toEqual(["project_path", "type"].sort());
+  });
+
+  it("suggests passing type as a string when the dispatcher reports a non-string type param", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: {
+        kind: "operation-error",
+        version: 1,
+        operation: "list_resources",
+        error: "type must be a string.",
+      },
+    });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.toLowerCase()).toContain("string");
+  });
+
+  it("returns a structured error naming both versions on a version mismatch", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "version-mismatch", expectedVersion: 1, actualVersion: 2 },
+    });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("1");
+    expect(text).toContain("2");
+  });
+
+  it("returns a guided spawn-error result when runOperation fails to launch Godot", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "spawn-error", message: "ENOENT: spawn godot" },
+    });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
+
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("ENOENT");
+  });
+
+  it("returns a guided timeout error result when runOperation times out", async () => {
+    const root = makeRoot();
+    const deps = makeDeps({
+      runOperationResult: { kind: "timeout", timeoutMs: 60_000 },
+    });
+    const tool = getListResourcesTool(deps);
+
+    const result = await tool.handler({ project_path: root }, {} as never);
 
     expect(result.isError).toBe(true);
     const text = (result.content[0] as { text: string }).text;

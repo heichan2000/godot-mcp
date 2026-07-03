@@ -1,9 +1,17 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../../src/config.js";
-import { hasImportCache } from "../../src/godot/cache.js";
+import { hasGodotCacheDir, hasImportCache } from "../../src/godot/cache.js";
+import { listProjectDirs, readProjectInfo } from "../../src/godot/discovery.js";
 import { detectGodotPath } from "../../src/godot/paths.js";
-import { resolveOperationsScriptPath, runCheckOnly, runOperation } from "../../src/godot/runner.js";
+import {
+  resolveOperationsScriptPath,
+  runCheckOnly,
+  runGodotImport,
+  runOperation,
+} from "../../src/godot/runner.js";
+import { createProjectTools } from "../../src/tools/project.js";
 import { createReadbackTools } from "../../src/tools/readback.js";
 import { createSceneTools } from "../../src/tools/scene.js";
 import { freshSampleProject, godotPath, hasGodot } from "./support.js";
@@ -34,6 +42,18 @@ function makeReadbackTools() {
     readFile: () => "",
     runOperation,
     operationsScriptPath: resolveOperationsScriptPath(),
+  });
+}
+
+function makeProjectTools() {
+  return createProjectTools({
+    loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
+    detectGodotPath,
+    runGodotImport,
+    hasGodotCacheDir,
+    hasImportCache,
+    listProjectDirs,
+    readProjectInfo,
   });
 }
 
@@ -367,3 +387,180 @@ describe.skipIf(!hasGodot)(
     });
   },
 );
+
+interface ListedResource {
+  path: string;
+  type: string;
+  uid?: string;
+}
+
+describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", () => {
+  it("lists the sample project's committed scenes/scripts by res:// path and type, skipping .godot", async () => {
+    const projectPath = freshSampleProject();
+    const readbackTools = makeReadbackTools();
+
+    const result = await getTool(readbackTools, "list_resources").handler(
+      { project_path: projectPath },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as { resources: ListedResource[] };
+    const byPath = new Map(structured.resources.map((r) => [r.path, r]));
+
+    expect(byPath.get("res://scenes/meshes.tscn")).toMatchObject({ type: "PackedScene" });
+    expect(byPath.get("res://scenes/print_marker.tscn")).toMatchObject({ type: "PackedScene" });
+    expect(byPath.get("res://scripts/print_marker.gd")).toMatchObject({ type: "GDScript" });
+
+    // Never leaks Godot's own internal cache directory or project.godot itself.
+    for (const resource of structured.resources) {
+      expect(resource.path).not.toContain("/.godot/");
+      expect(resource.path).not.toBe("res://project.godot");
+      expect(resource.path.endsWith(".import")).toBe(false);
+      expect(resource.path.endsWith(".uid")).toBe(false);
+    }
+  }, 60_000);
+
+  it("an unimported texture does not appear on a cold project (no error), but does after import_project - with a uid", async () => {
+    const projectPath = freshSampleProject();
+    expect(existsSync(path.join(projectPath, ".godot"))).toBe(false);
+    const readbackTools = makeReadbackTools();
+
+    const coldResult = await getTool(readbackTools, "list_resources").handler(
+      { project_path: projectPath },
+      {} as never,
+    );
+    expect(coldResult.isError).toBeFalsy();
+    const coldStructured = coldResult.structuredContent as { resources: ListedResource[] };
+    expect(coldStructured.resources.some((r) => r.path === "res://textures/sprite.png")).toBe(
+      false,
+    );
+    // Scenes/scripts don't need an import cache, so they're already visible.
+    expect(coldStructured.resources.some((r) => r.path === "res://scripts/print_marker.gd")).toBe(
+      true,
+    );
+
+    const projectTools = makeProjectTools();
+    const importResult = await getTool(projectTools, "import_project").handler(
+      { project_path: projectPath },
+      {} as never,
+    );
+    expect(importResult.isError).toBeFalsy();
+
+    const warmResult = await getTool(readbackTools, "list_resources").handler(
+      { project_path: projectPath },
+      {} as never,
+    );
+    expect(warmResult.isError).toBeFalsy();
+    const warmStructured = warmResult.structuredContent as { resources: ListedResource[] };
+    const sprite = warmStructured.resources.find((r) => r.path === "res://textures/sprite.png");
+    expect(sprite).toBeDefined();
+    expect(sprite!.type).toBe("CompressedTexture2D");
+    expect(sprite!.uid).toMatch(/^uid:\/\/[0-9a-z]+$/);
+  }, 90_000);
+
+  it("type filter narrows to exactly the matching subclass (Texture2D matches CompressedTexture2D)", async () => {
+    const projectPath = freshSampleProject();
+    const readbackTools = makeReadbackTools();
+    const projectTools = makeProjectTools();
+    const importResult = await getTool(projectTools, "import_project").handler(
+      { project_path: projectPath },
+      {} as never,
+    );
+    expect(importResult.isError).toBeFalsy();
+
+    const result = await getTool(readbackTools, "list_resources").handler(
+      { project_path: projectPath, type: "Texture2D" },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as { resources: ListedResource[] };
+    expect(structured.resources).toEqual([
+      { path: "res://textures/sprite.png", type: "CompressedTexture2D", uid: expect.any(String) },
+    ]);
+  }, 90_000);
+
+  it("a type filter that matches nothing returns an empty list rather than an error", async () => {
+    const projectPath = freshSampleProject();
+    const readbackTools = makeReadbackTools();
+
+    const result = await getTool(readbackTools, "list_resources").handler(
+      { project_path: projectPath, type: "TotallyNotARealGodotClass" },
+      {} as never,
+    );
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as { resources: ListedResource[] };
+    expect(structured.resources).toEqual([]);
+  }, 60_000);
+
+  it(
+    "closes the discovery->use loop: list_resources finds the sample texture, and its returned " +
+      "path feeds a successful load_sprite call",
+    async () => {
+      const projectPath = freshSampleProject();
+      const scenePath = path.join("scenes", "hero.tscn");
+
+      const sceneTools = createSceneTools({
+        loadConfig: (): Config => ({ godotPath, debug: false, outputBufferLines: 1000 }),
+        detectGodotPath,
+        runOperation,
+        operationsScriptPath: resolveOperationsScriptPath(),
+        hasImportCache,
+      });
+      const projectTools = makeProjectTools();
+      const readbackTools = makeReadbackTools();
+
+      const importResult = await getTool(projectTools, "import_project").handler(
+        { project_path: projectPath },
+        {} as never,
+      );
+      expect(importResult.isError).toBeFalsy();
+
+      const createResult = await getTool(sceneTools, "create_scene").handler(
+        { project_path: projectPath, scene_path: scenePath, root_node_type: "Node2D" },
+        {} as never,
+      );
+      expect(createResult.isError).toBeFalsy();
+
+      const addSpriteResult = await getTool(sceneTools, "add_node").handler(
+        {
+          project_path: projectPath,
+          scene_path: scenePath,
+          node_type: "Sprite2D",
+          node_name: "Hero",
+        },
+        {} as never,
+      );
+      expect(addSpriteResult.isError).toBeFalsy();
+
+      const listResult = await getTool(readbackTools, "list_resources").handler(
+        { project_path: projectPath, type: "Texture2D" },
+        {} as never,
+      );
+      expect(listResult.isError).toBeFalsy();
+      const listStructured = listResult.structuredContent as { resources: ListedResource[] };
+      const texture = listStructured.resources.find((r) => r.path === "res://textures/sprite.png");
+      expect(texture).toBeDefined();
+
+      // res:// -> project-relative, the form load_sprite's texture_path expects.
+      const texturePath = texture!.path.replace(/^res:\/\//, "");
+
+      const loadResult = await getTool(sceneTools, "load_sprite").handler(
+        {
+          project_path: projectPath,
+          scene_path: scenePath,
+          node_path: "Hero",
+          texture_path: texturePath,
+        },
+        {} as never,
+      );
+
+      expect(loadResult.isError).toBeFalsy();
+      const loadStructured = loadResult.structuredContent as { texture_path: string };
+      expect(loadStructured.texture_path).toBe("res://textures/sprite.png");
+    },
+    60_000,
+  );
+});

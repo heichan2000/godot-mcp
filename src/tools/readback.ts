@@ -156,6 +156,9 @@ function operationErrorSolutions(error: string): string[] {
       "Call read_node_properties without a properties filter first to see the node's actual stored properties.",
     ];
   }
+  if (/type must be a string/i.test(error)) {
+    return ['Pass type as a plain string Godot class name, e.g. "Texture2D".'];
+  }
   return ["Check that scene_path and the other parameters are valid for this project."];
 }
 
@@ -223,12 +226,27 @@ const readNodePropertiesInputSchema = {
     ),
 };
 
+const listResourcesInputSchema = {
+  project_path: projectPathSchema,
+  type: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Optional Godot class name to narrow results to - matches a resource whose class is " +
+        'EXACTLY this name OR a subclass of it (via ClassDB.is_parent_class), so "Texture2D" ' +
+        'also matches an imported .png\'s actual class, "CompressedTexture2D". A name Godot ' +
+        "does not recognize as a class simply matches nothing (an empty resources list), never " +
+        "an error.",
+    ),
+};
+
 /**
  * Builds the `tools/readback.ts` descriptor group: `get_script_errors`,
- * `get_scene_tree`, and `read_node_properties` (the latter two close the
- * write->verify loop with `add_node` - see godot-prd.md §6.2). `list_resources`
- * belongs in this same file per the PRD's source layout table but is a
- * separate task.
+ * `get_scene_tree`, `read_node_properties` (the latter two close the
+ * write->verify loop with `add_node` - see godot-prd.md §6.2), and
+ * `list_resources` (asset discovery - lets an agent find what exists before
+ * referencing it with e.g. `load_sprite`/`add_node`).
  *
  * `get_script_errors` never goes through `operations.gd`/`runOperation` -
  * Godot exposes no error-reporting API, so the only mechanism available is a
@@ -242,6 +260,13 @@ const readNodePropertiesInputSchema = {
  * dispatcher exactly like `tools/scene.ts`'s ops: they load the scene
  * read-only (never saving anything back) via `operations.gd`'s
  * `op_get_scene_tree`/`op_read_node_properties`.
+ *
+ * `list_resources` also goes through the dispatcher (`op_list_resources`),
+ * walking `res://` read-only. It takes no sub-path parameter beyond
+ * `project_path` itself - there is nothing for `assertInsideRoot` to check,
+ * since a walk rooted at `res://` can never produce a path outside the
+ * project - so unlike every other op in this file it skips straight to
+ * resolving Godot with no containment step first.
  */
 export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): ToolDescriptor[] {
   const getScriptErrors: ToolDescriptor<typeof getScriptErrorsInputSchema> = {
@@ -485,10 +510,59 @@ export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): Tool
     },
   };
 
+  const listResources: ToolDescriptor<typeof listResourcesInputSchema> = {
+    name: "list_resources",
+    description:
+      "Discovers resources under project_path (res://) - asset discovery before referencing " +
+      "one with another tool (e.g. load_sprite/add_node). Returns " +
+      "{ resources: [{ path, type, uid? }] }: path is the resource's res:// path; type is its " +
+      'actual Godot class (e.g. "CompressedTexture2D" for an imported .png, "PackedScene" for a ' +
+      '.tscn, "GDScript" for a .gd script); uid (a uid://... string) is included only when ' +
+      "Godot has already assigned AND recognizes a UID for that resource (Godot >= 4.4, and the " +
+      "project has been scanned/imported at least once) - omitted, never erroring, otherwise. " +
+      "Optional type narrows results to resources whose class matches type exactly OR is a " +
+      'subclass of it (so type: "Texture2D" also matches a CompressedTexture2D); a type Godot ' +
+      "does not recognize as a class simply matches nothing. Always skips the internal .godot " +
+      "directory (and any other dot-prefixed directory) and never lists outside project_path - " +
+      "a walk rooted at res:// cannot escape the project. A resource that Godot recognizes as " +
+      "loadable but cannot yet actually load (e.g. an image file before import_project has " +
+      "built the import cache) is silently omitted rather than erroring the whole listing - run " +
+      "import_project first if an expected asset is missing from the results.",
+    inputSchema: listResourcesInputSchema,
+    handler: async ({ project_path, type }) => {
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] list_resources: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const params: Record<string, unknown> = {};
+      if (type !== undefined) {
+        params.type = type;
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "list_resources",
+        params,
+      });
+
+      return operationResultToToolResult(result, "Listed resources");
+    },
+  };
+
   return [
     getScriptErrors as unknown as ToolDescriptor,
     getSceneTree as unknown as ToolDescriptor,
     readNodeProperties as unknown as ToolDescriptor,
+    listResources as unknown as ToolDescriptor,
   ];
 }
 

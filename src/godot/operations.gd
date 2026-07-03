@@ -89,6 +89,8 @@ func dispatch(operation: String, params: Dictionary) -> Dictionary:
 			return op_get_uid(params)
 		"update_project_uids":
 			return op_update_project_uids(params)
+		"list_resources":
+			return op_list_resources(params)
 		_:
 			return { "ok": false, "error": "Unknown operation: %s" % operation }
 
@@ -776,6 +778,120 @@ func collect_resave_targets(dir_path: String, out: Array) -> void:
 				out.append(full_path)
 		entry = dir.get_next()
 	dir.list_dir_end()
+
+## list_resources(type: String = "")
+## Recursively walks every file under res:// (skipping the internal .godot
+## directory and any other dot-prefixed directory - .git, etc.), classifying
+## each remaining file that Godot recognizes as a loadable resource, and
+## returns { resources: [ { path, type, uid? }, ... ] }.
+##
+## `type` on each entry is the resource's actual Godot class - e.g.
+## "CompressedTexture2D" for an imported .png (not the generic "Texture2D"),
+## "PackedScene" for a .tscn, "GDScript" for a .gd script. There is no
+## metadata-only "peek the type without loading" API on Godot's bound
+## ResourceLoader - empirically confirmed against Godot 4.6.3 (see task-56
+## report): ResourceLoader exposes exists/get_resource_uid/load/
+## get_recognized_extensions_for_type/list_directory/get_dependencies/... but
+## no get_resource_type, despite that name appearing in some editor-plugin
+## (ResourceFormatLoader) docs. So this classifies by actually calling load()
+## and reading the resulting instance's get_class() - the same information
+## get_scene_tree already reports for live nodes, applied here to on-disk
+## resources instead.
+##
+## `.import`/`.uid` sidecar files are skipped outright by extension (never
+## real resources, just Godot-generated metadata) rather than relying on
+## ResourceLoader.exists() to reject them, even though it empirically also
+## does - being explicit here documents the intent instead of depending on
+## incidental engine behavior.
+##
+## A path ResourceLoader.exists() confirms as recognized but that still
+## fails to load() (e.g. any resource that fails to load for some reason) is
+## skipped rather than erroring the whole listing - an unimported asset like
+## a texture before import_project has built the project's import cache
+## never even reaches this point, since ResourceLoader.exists() itself
+## already returns false for it (empirically confirmed). godot-prd.md §3's
+## "asset-dependent ops detect a cold cache and guide the caller to
+## import_project" applies to ops that need one *specific* asset to load; a
+## broad listing op has no single resource to name in a guided error -
+## import_project (or noticing that an expected asset didn't show up) is the
+## way to surface those instead.
+##
+## Optional `type` narrows results to resources whose class matches exactly
+## OR is a subclass of it (ClassDB.is_parent_class), so type: "Texture2D"
+## also matches a CompressedTexture2D. A `type` value that isn't a real
+## ClassDB class name simply matches nothing (an empty resources list),
+## rather than erroring - the same "unmatched filter, not a mistake" stance
+## op_export_mesh_library's mesh_item_names filter does NOT take (that one
+## errors on zero matches), because there the caller supplied specific known
+## node names from the same scene; here type is an open-ended class name the
+## caller may not know exists in this project ahead of time.
+func op_list_resources(params: Dictionary) -> Dictionary:
+	var type_filter: String = ""
+	if params.has("type"):
+		if typeof(params["type"]) != TYPE_STRING:
+			return { "ok": false, "error": "type must be a string." }
+		type_filter = params["type"]
+
+	var resources: Array = []
+	collect_resources("res://", type_filter, resources)
+	resources.sort_custom(func(a, b): return (a["path"] as String) < (b["path"] as String))
+
+	return { "ok": true, "result": { "resources": resources } }
+
+## Recursively walks dir_path (a res:// path), appending a { path, type,
+## uid? } Dictionary to out for every file that qualifies - see
+## op_list_resources for the full classification/filtering contract this
+## implements. Directories named "." / ".." are skipped as DirAccess
+## iteration artifacts; any other dot-prefixed directory (.godot, .git, ...)
+## is skipped entirely, matching collect_resave_targets's convention.
+func collect_resources(dir_path: String, type_filter: String, out: Array) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry == "." or entry == "..":
+			entry = dir.get_next()
+			continue
+		var full_path := dir_path.path_join(entry)
+		if dir.current_is_dir():
+			if not entry.begins_with("."):
+				collect_resources(full_path, type_filter, out)
+		else:
+			maybe_collect_resource(full_path, type_filter, out)
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+## Classifies a single res:// file path and appends its { path, type, uid? }
+## entry to out if it qualifies - see op_list_resources for the full
+## contract. Silently does nothing for a path that isn't a resource
+## ResourceLoader recognizes, a sidecar file, or one that fails to actually
+## load.
+func maybe_collect_resource(res_path: String, type_filter: String, out: Array) -> void:
+	var ext := res_path.get_extension().to_lower()
+	if ext == "import" or ext == "uid":
+		return
+	if not ResourceLoader.exists(res_path):
+		return
+
+	var resource: Resource = load(res_path)
+	if resource == null:
+		return
+	var resource_type := resource.get_class()
+
+	if not type_filter.is_empty():
+		var matches := resource_type == type_filter \
+				or (ClassDB.class_exists(type_filter) and ClassDB.is_parent_class(resource_type, type_filter))
+		if not matches:
+			return
+
+	var entry: Dictionary = { "path": res_path, "type": resource_type }
+	var uid_id := ResourceLoader.get_resource_uid(res_path)
+	if uid_id != ResourceUID.INVALID_ID:
+		entry["uid"] = ResourceUID.id_to_text(uid_id)
+
+	out.append(entry)
 
 ## True only if type_name names a Node-derived (or exactly Node) class that
 ## can be instantiated directly: known to ClassDB, is_parent_class of "Node"
