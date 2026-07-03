@@ -117,6 +117,12 @@ describe("assertInsideRoot", () => {
     );
   });
 
+  it("rejects godot-prd.md §11's exact security-smoke example (../../etc/passwd) as a scene_path", () => {
+    const root = makeRoot();
+
+    expect(() => assertInsideRoot(root, "../../etc/passwd")).toThrow(PathContainmentError);
+  });
+
   it("does not reject a filename that merely starts with .. (no traversal)", () => {
     const root = makeRoot();
     writeFileSync(path.join(root, "..hidden-ish"), "");
