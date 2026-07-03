@@ -24,6 +24,10 @@ import {
 } from "../godot/script-errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import { projectPathSchema, relativePathSchema, scenePathSchema } from "../schemas.js";
+import {
+  operationResultToToolResult as sharedOperationResultToToolResult,
+  sceneNotFoundSolutions,
+} from "./operation-result.js";
 
 export interface ReadbackToolsDeps {
   loadConfig: typeof loadConfig;
@@ -130,18 +134,15 @@ const getScriptErrorsInputSchema = {
  * Builds guided `possibleSolutions` for an `operation-error` result from
  * `get_scene_tree`/`read_node_properties` - the two ops in this file that DO
  * go through `operations.gd`/`runOperation` (unlike `get_script_errors`,
- * see the module doc comment below). Kept as its own copy rather than
- * imported from `tools/scene.ts` - that function is unexported and, per this
- * codebase's convention (see `toResourcePath` above), each tool file owns
- * its own small copy of a helper like this rather than sharing a
- * premature abstraction across unrelated op sets.
+ * see the module doc comment below). Genuinely per-domain (each branch
+ * matches error text only these two ops can produce), so it stays its own
+ * function here rather than merging with `tools/scene.ts`'s equivalent - the
+ * "scene does not exist at" branch is the one exception, shared via
+ * `sceneNotFoundSolutions` since it means the same thing in both files.
  */
 function operationErrorSolutions(error: string): string[] {
   if (/scene does not exist at/i.test(error)) {
-    return [
-      "Check that scene_path points at an existing .tscn file relative to project_path.",
-      "Use create_scene first if the scene does not exist yet.",
-    ];
+    return sceneNotFoundSolutions;
   }
   if (/node_path not found in scene/i.test(error)) {
     return [
@@ -159,67 +160,30 @@ function operationErrorSolutions(error: string): string[] {
 }
 
 /**
+ * This file's ops (get_scene_tree/read_node_properties) are read-only, so
+ * unlike `tools/scene.ts`'s ops they aren't subject to import-cache/project-
+ * size slowdowns - the timeout guidance here is plainer, without that extra
+ * hint (see `operation-result.ts`'s doc comment for why this varies per
+ * file while everything else about the timeout branch doesn't).
+ */
+const timeoutSolutions: string[] = [
+  "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
+  "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
+];
+
+/**
  * Converts a `RunOperationResult` into an MCP tool result for
- * `get_scene_tree`/`read_node_properties`. Mirrors `tools/scene.ts`'s
- * `operationResultToToolResult` exactly (same `RunOperationResult` contract,
- * same error-mapping shape) - kept as its own copy for the same reason
- * `operationErrorSolutions` above is.
+ * `get_scene_tree`/`read_node_properties`. Thin wrapper around the shared
+ * `operationResultToToolResult` in `operation-result.ts` (see its doc
+ * comment for the full mapping) that binds this file's own
+ * `operationErrorSolutions` and `timeoutSolutions` - the two things that
+ * vary per tool file.
  */
 function operationResultToToolResult(result: RunOperationResult, successLabel: string) {
-  switch (result.kind) {
-    case "success":
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `${successLabel}: ${JSON.stringify(result.result)}`,
-          },
-        ],
-        structuredContent: result.result,
-      };
-    case "operation-error":
-      return createErrorResponse({
-        message: result.error,
-        possibleSolutions: operationErrorSolutions(result.error),
-      });
-    case "version-mismatch":
-      return createErrorResponse({
-        message:
-          `Dispatcher version mismatch: the runner expects operations.gd version ` +
-          `${result.expectedVersion}, but the dispatcher reported version ${result.actualVersion}.`,
-        possibleSolutions: [
-          "Reinstall or rebuild the package so the bundled operations.gd matches this server version (npm install / npm run build).",
-          "If you customized operations.gd, update its VERSION constant to match the runner's expected version.",
-        ],
-      });
-    case "protocol-error":
-      return createErrorResponse({
-        message: result.message,
-        possibleSolutions: [
-          "Run with DEBUG=1 and inspect stderr for the underlying Godot error.",
-          "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
-        ],
-      });
-    case "spawn-error":
-      return createErrorResponse({
-        message: `Failed to launch Godot: ${result.message}`,
-        possibleSolutions: [
-          "Confirm GODOT_PATH points at a valid, executable Godot 4.x binary.",
-          "Try running the executable manually from a terminal to confirm it works.",
-        ],
-      });
-    case "timeout":
-      return createErrorResponse({
-        message:
-          `Godot did not respond within ${result.timeoutMs}ms and was killed. This usually ` +
-          "means the process hung (e.g. a stuck asset import, a blocking dialog, or a deadlock " +
-          "in headless mode) rather than finishing.",
-        possibleSolutions: [
-          "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
-          "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
-        ],
-      });
-  }
+  return sharedOperationResultToToolResult(result, successLabel, {
+    operationErrorSolutions,
+    timeoutSolutions,
+  });
 }
 
 const getSceneTreeInputSchema = {

@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { loadConfig } from "../config.js";
-import { createErrorResponse } from "../errors.js";
 import { coldImportCacheError, hasImportCache } from "../godot/cache.js";
 import {
   assertInsideRoot,
@@ -17,6 +16,10 @@ import {
 import { propertiesSchema } from "../godot/values.js";
 import type { ToolDescriptor } from "../registry.js";
 import { projectPathSchema, relativePathSchema, scenePathSchema } from "../schemas.js";
+import {
+  operationResultToToolResult as sharedOperationResultToToolResult,
+  sceneNotFoundSolutions,
+} from "./operation-result.js";
 
 const DEFAULT_ROOT_NODE_TYPE = "Node2D";
 
@@ -61,10 +64,7 @@ function operationErrorSolutions(error: string): string[] {
     ];
   }
   if (/scene does not exist at/i.test(error)) {
-    return [
-      "Check that scene_path points at an existing .tscn file relative to project_path.",
-      "Use create_scene first if the scene does not exist yet.",
-    ];
+    return sceneNotFoundSolutions;
   }
   if (/is not an instantiable node class/i.test(error)) {
     return [
@@ -132,69 +132,31 @@ function operationErrorSolutions(error: string): string[] {
 }
 
 /**
- * Converts a `RunOperationResult` into an MCP tool result. `success` is the
- * only non-error branch; every other kind maps to a guided
- * `createErrorResponse`, tailored to what actually went wrong (an op-level
- * failure reported by the dispatcher vs. a version mismatch vs. Godot
- * failing to even respond). `successLabel` prefixes the human-readable text
- * for a successful call (e.g. "Created scene", "Added node").
+ * This file's ops (create_scene, add_node, load_sprite, save_scene,
+ * export_mesh_library) can be slowed by a cold/stuck asset import cache or
+ * an unusually large project, so its timeout guidance calls that out
+ * explicitly - unlike `tools/readback.ts`'s read-only ops, which get a
+ * plainer hint (see `operation-result.ts`'s doc comment for why this varies
+ * per file while everything else about the timeout branch doesn't).
+ */
+const timeoutSolutions: string[] = [
+  "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
+  "Check for a stuck import (e.g. delete the .godot/imported cache and retry) or other one-time startup cost that may need a longer timeout.",
+  "If this project is unusually large or slow to open, a future call may need a larger timeoutMs than the default.",
+];
+
+/**
+ * Converts a `RunOperationResult` into an MCP tool result for this file's
+ * ops. Thin wrapper around the shared `operationResultToToolResult` in
+ * `operation-result.ts` (see its doc comment for the full mapping) that
+ * binds this file's own `operationErrorSolutions` and `timeoutSolutions` -
+ * the two things that vary per tool file.
  */
 function operationResultToToolResult(result: RunOperationResult, successLabel: string) {
-  switch (result.kind) {
-    case "success":
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `${successLabel}: ${JSON.stringify(result.result)}`,
-          },
-        ],
-        structuredContent: result.result,
-      };
-    case "operation-error":
-      return createErrorResponse({
-        message: result.error,
-        possibleSolutions: operationErrorSolutions(result.error),
-      });
-    case "version-mismatch":
-      return createErrorResponse({
-        message:
-          `Dispatcher version mismatch: the runner expects operations.gd version ` +
-          `${result.expectedVersion}, but the dispatcher reported version ${result.actualVersion}.`,
-        possibleSolutions: [
-          "Reinstall or rebuild the package so the bundled operations.gd matches this server version (npm install / npm run build).",
-          "If you customized operations.gd, update its VERSION constant to match the runner's expected version.",
-        ],
-      });
-    case "protocol-error":
-      return createErrorResponse({
-        message: result.message,
-        possibleSolutions: [
-          "Run with DEBUG=1 and inspect stderr for the underlying Godot error.",
-          "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
-        ],
-      });
-    case "spawn-error":
-      return createErrorResponse({
-        message: `Failed to launch Godot: ${result.message}`,
-        possibleSolutions: [
-          "Confirm GODOT_PATH points at a valid, executable Godot 4.x binary.",
-          "Try running the executable manually from a terminal to confirm it works.",
-        ],
-      });
-    case "timeout":
-      return createErrorResponse({
-        message:
-          `Godot did not respond within ${result.timeoutMs}ms and was killed. This usually ` +
-          "means the process hung (e.g. a stuck asset import, a blocking dialog, or a deadlock " +
-          "in headless mode) rather than finishing.",
-        possibleSolutions: [
-          "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
-          "Check for a stuck import (e.g. delete the .godot/imported cache and retry) or other one-time startup cost that may need a longer timeout.",
-          "If this project is unusually large or slow to open, a future call may need a larger timeoutMs than the default.",
-        ],
-      });
-  }
+  return sharedOperationResultToToolResult(result, successLabel, {
+    operationErrorSolutions,
+    timeoutSolutions,
+  });
 }
 
 /**
