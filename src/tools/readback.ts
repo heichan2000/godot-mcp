@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { createErrorResponse } from "../errors.js";
 import {
@@ -9,7 +10,13 @@ import {
   PathContainmentError,
   pathContainmentErrorResponse,
 } from "../godot/paths.js";
-import { runCheckOnly, type RunCheckOnlyResult } from "../godot/runner.js";
+import {
+  resolveOperationsScriptPath,
+  runCheckOnly,
+  runOperation,
+  type RunCheckOnlyResult,
+  type RunOperationResult,
+} from "../godot/runner.js";
 import {
   extractSceneScriptPaths,
   parseCheckOnlyStderr,
@@ -26,6 +33,10 @@ export interface ReadbackToolsDeps {
   fileExists: (candidate: string) => boolean;
   /** Reads a resolved absolute path's contents as UTF-8 text (used to parse a scene's ext_resource entries). */
   readFile: (candidate: string) => string;
+  /** Used by get_scene_tree/read_node_properties, which - unlike get_script_errors - go through the operations.gd dispatcher. */
+  runOperation: typeof runOperation;
+  /** Path to the bundled operations.gd dispatcher script. */
+  operationsScriptPath: string;
 }
 
 const defaultDeps: ReadbackToolsDeps = {
@@ -34,6 +45,8 @@ const defaultDeps: ReadbackToolsDeps = {
   runCheckOnly,
   fileExists: existsSync,
   readFile: (candidate) => readFileSync(candidate, "utf-8"),
+  runOperation,
+  operationsScriptPath: resolveOperationsScriptPath(),
 };
 
 /**
@@ -114,18 +127,157 @@ const getScriptErrorsInputSchema = {
 };
 
 /**
- * Builds the `tools/readback.ts` descriptor group. Currently just
- * `get_script_errors`; other read-back tools (get_scene_tree,
- * read_node_properties, list_resources - see godot-prd.md §6.2) belong in
- * this same file per the PRD's source layout table but are separate tasks.
+ * Builds guided `possibleSolutions` for an `operation-error` result from
+ * `get_scene_tree`/`read_node_properties` - the two ops in this file that DO
+ * go through `operations.gd`/`runOperation` (unlike `get_script_errors`,
+ * see the module doc comment below). Kept as its own copy rather than
+ * imported from `tools/scene.ts` - that function is unexported and, per this
+ * codebase's convention (see `toResourcePath` above), each tool file owns
+ * its own small copy of a helper like this rather than sharing a
+ * premature abstraction across unrelated op sets.
+ */
+function operationErrorSolutions(error: string): string[] {
+  if (/scene does not exist at/i.test(error)) {
+    return [
+      "Check that scene_path points at an existing .tscn file relative to project_path.",
+      "Use create_scene first if the scene does not exist yet.",
+    ];
+  }
+  if (/node_path not found in scene/i.test(error)) {
+    return [
+      "Check the exact node path against the error's list of available node paths.",
+      "Call get_scene_tree first to discover valid node paths for this scene.",
+    ];
+  }
+  if (/property does not exist on/i.test(error)) {
+    return [
+      "Check the property name against the Godot class reference for this node's type - it is case-sensitive.",
+      "Call read_node_properties without a properties filter first to see the node's actual stored properties.",
+    ];
+  }
+  return ["Check that scene_path and the other parameters are valid for this project."];
+}
+
+/**
+ * Converts a `RunOperationResult` into an MCP tool result for
+ * `get_scene_tree`/`read_node_properties`. Mirrors `tools/scene.ts`'s
+ * `operationResultToToolResult` exactly (same `RunOperationResult` contract,
+ * same error-mapping shape) - kept as its own copy for the same reason
+ * `operationErrorSolutions` above is.
+ */
+function operationResultToToolResult(result: RunOperationResult, successLabel: string) {
+  switch (result.kind) {
+    case "success":
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${successLabel}: ${JSON.stringify(result.result)}`,
+          },
+        ],
+        structuredContent: result.result,
+      };
+    case "operation-error":
+      return createErrorResponse({
+        message: result.error,
+        possibleSolutions: operationErrorSolutions(result.error),
+      });
+    case "version-mismatch":
+      return createErrorResponse({
+        message:
+          `Dispatcher version mismatch: the runner expects operations.gd version ` +
+          `${result.expectedVersion}, but the dispatcher reported version ${result.actualVersion}.`,
+        possibleSolutions: [
+          "Reinstall or rebuild the package so the bundled operations.gd matches this server version (npm install / npm run build).",
+          "If you customized operations.gd, update its VERSION constant to match the runner's expected version.",
+        ],
+      });
+    case "protocol-error":
+      return createErrorResponse({
+        message: result.message,
+        possibleSolutions: [
+          "Run with DEBUG=1 and inspect stderr for the underlying Godot error.",
+          "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
+        ],
+      });
+    case "spawn-error":
+      return createErrorResponse({
+        message: `Failed to launch Godot: ${result.message}`,
+        possibleSolutions: [
+          "Confirm GODOT_PATH points at a valid, executable Godot 4.x binary.",
+          "Try running the executable manually from a terminal to confirm it works.",
+        ],
+      });
+    case "timeout":
+      return createErrorResponse({
+        message:
+          `Godot did not respond within ${result.timeoutMs}ms and was killed. This usually ` +
+          "means the process hung (e.g. a stuck asset import, a blocking dialog, or a deadlock " +
+          "in headless mode) rather than finishing.",
+        possibleSolutions: [
+          "Try running the same Godot command manually from a terminal to see whether it hangs or prompts for input.",
+          "Confirm GODOT_PATH points at a working Godot 4.x headless-capable executable.",
+        ],
+      });
+  }
+}
+
+const getSceneTreeInputSchema = {
+  project_path: projectPathSchema,
+  scene_path: scenePathSchema.describe(
+    "Path to an existing .tscn scene file, relative to project_path.",
+  ),
+};
+
+const readNodePropertiesInputSchema = {
+  project_path: projectPathSchema,
+  scene_path: scenePathSchema.describe(
+    "Path to an existing .tscn scene file, relative to project_path.",
+  ),
+  node_path: z
+    .string()
+    .min(1)
+    .describe(
+      'Path (relative to the scene root) of the node to read properties from - "." for the ' +
+        'scene root itself, or a NodePath like "Body/Hero" for a nested node. Same convention ' +
+        "get_scene_tree's returned paths and add_node's parent_node_path already use. Must " +
+        "already exist in the scene - an unresolvable node_path is a structured error listing " +
+        "every available node path.",
+    ),
+  properties: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "Optional list of specific property names to fetch from the LIVE instantiated node via " +
+        "get() - returned even when the property still holds its class default (e.g. an " +
+        "untouched position). When omitted, only properties actually stored in the .tscn (the " +
+        "node's non-default state) are returned - never the class's full ~40+-entry default " +
+        "property list. Values use the shared codec: bool/int/float/string travel natively, " +
+        'every other type as its var_to_str text form, e.g. "Vector2(100, 50)" - the same ' +
+        "encoding add_node's properties param accepts, so a value written that way reads back " +
+        "here as that identical string.",
+    ),
+};
+
+/**
+ * Builds the `tools/readback.ts` descriptor group: `get_script_errors`,
+ * `get_scene_tree`, and `read_node_properties` (the latter two close the
+ * write->verify loop with `add_node` - see godot-prd.md §6.2). `list_resources`
+ * belongs in this same file per the PRD's source layout table but is a
+ * separate task.
  *
- * Unlike every other tool file, this one never goes through
- * `operations.gd`/`runOperation` - Godot exposes no error-reporting API, so
- * the only mechanism available is a plain `godot --check-only --script ...`
- * invocation (see `godot/runner.ts`'s `runCheckOnly`) and a best-effort
- * regex parse of its stderr (see `godot/script-errors.ts`). `raw` always
- * carries the untouched stderr text - a missed parse (e.g. a future Godot
- * stderr format change) loses structure, never information.
+ * `get_script_errors` never goes through `operations.gd`/`runOperation` -
+ * Godot exposes no error-reporting API, so the only mechanism available is a
+ * plain `godot --check-only --script ...` invocation (see `godot/runner.ts`'s
+ * `runCheckOnly`) and a best-effort regex parse of its stderr (see
+ * `godot/script-errors.ts`). `raw` always carries the untouched stderr text -
+ * a missed parse (e.g. a future Godot stderr format change) loses structure,
+ * never information.
+ *
+ * `get_scene_tree` and `read_node_properties`, by contrast, DO go through the
+ * dispatcher exactly like `tools/scene.ts`'s ops: they load the scene
+ * read-only (never saving anything back) via `operations.gd`'s
+ * `op_get_scene_tree`/`op_read_node_properties`.
  */
 export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): ToolDescriptor[] {
   const getScriptErrors: ToolDescriptor<typeof getScriptErrorsInputSchema> = {
@@ -273,7 +425,107 @@ export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): Tool
     },
   };
 
-  return [getScriptErrors as unknown as ToolDescriptor];
+  const getSceneTree: ToolDescriptor<typeof getSceneTreeInputSchema> = {
+    name: "get_scene_tree",
+    description:
+      "Returns the full node tree of an existing scene as a nested " +
+      "{ name, type, path, children[] } structure: name is the node's name, type is its " +
+      'actual Godot class, and path is root-relative ("." for the scene root itself, e.g. ' +
+      '"Body/Hero" for a nested node) - directly usable as node_path/parent_node_path input to ' +
+      "other tools (add_node, load_sprite, read_node_properties, ...). Lets an agent verify " +
+      "scene structure and discover valid node paths without guessing.",
+    inputSchema: getSceneTreeInputSchema,
+    handler: async ({ project_path, scene_path }) => {
+      try {
+        assertInsideRoot(project_path, scene_path);
+      } catch (error) {
+        if (error instanceof PathContainmentError) {
+          return pathContainmentErrorResponse(error);
+        }
+        throw error;
+      }
+
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] get_scene_tree: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "get_scene_tree",
+        params: { scene_path },
+      });
+
+      return operationResultToToolResult(result, "Got scene tree");
+    },
+  };
+
+  const readNodeProperties: ToolDescriptor<typeof readNodePropertiesInputSchema> = {
+    name: "read_node_properties",
+    description:
+      "Reads properties from a node in an existing scene - the read half of the write->verify " +
+      "loop with add_node. Default (properties omitted): returns only properties actually " +
+      "stored in the .tscn for this node (its non-default state), never the ~40+ engine " +
+      "defaults every node class carries. Pass properties (a list of names) to instead fetch " +
+      "those specific named properties from the live node via get(), returned even when they " +
+      'still hold their class default. node_path is root-relative ("." for the scene root ' +
+      "itself) - the same convention get_scene_tree's returned paths use; an unresolvable " +
+      "node_path is a structured error listing every available node path in the scene. Every " +
+      "value uses the shared codec: bool/int/float/string travel natively, every other type as " +
+      'its var_to_str text form, so a property add_node wrote as "Vector2(100, 50)" reads back ' +
+      "here as that identical string.",
+    inputSchema: readNodePropertiesInputSchema,
+    handler: async ({ project_path, scene_path, node_path, properties }) => {
+      try {
+        assertInsideRoot(project_path, scene_path);
+      } catch (error) {
+        if (error instanceof PathContainmentError) {
+          return pathContainmentErrorResponse(error);
+        }
+        throw error;
+      }
+
+      const config = deps.loadConfig();
+      const resolution = deps.detectGodotPath({ configuredPath: config.godotPath });
+
+      if (config.debug) {
+        console.error(`[godot-mcp] read_node_properties: resolution=${JSON.stringify(resolution)}`);
+      }
+
+      if (!resolution.found) {
+        return godotNotFoundError(resolution.candidates);
+      }
+
+      const params: Record<string, unknown> = { scene_path, node_path };
+      if (properties !== undefined) {
+        params.properties = properties;
+      }
+
+      const result = await deps.runOperation({
+        godotPath: resolution.path,
+        projectPath: project_path,
+        operationScriptPath: deps.operationsScriptPath,
+        operation: "read_node_properties",
+        params,
+      });
+
+      return operationResultToToolResult(result, "Read node properties");
+    },
+  };
+
+  return [
+    getScriptErrors as unknown as ToolDescriptor,
+    getSceneTree as unknown as ToolDescriptor,
+    readNodeProperties as unknown as ToolDescriptor,
+  ];
 }
 
 export const readbackTools: ToolDescriptor[] = createReadbackTools();

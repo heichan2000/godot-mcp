@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { Config } from "../../src/config.js";
 import { detectGodotPath } from "../../src/godot/paths.js";
-import { runCheckOnly } from "../../src/godot/runner.js";
+import { resolveOperationsScriptPath, runCheckOnly, runOperation } from "../../src/godot/runner.js";
 import { createReadbackTools } from "../../src/tools/readback.js";
 import { freshSampleProject, godotPath, hasGodot } from "./support.js";
 
@@ -17,6 +17,8 @@ function makeTools(overrides: { runCheckOnly?: typeof runCheckOnly } = {}) {
     runCheckOnly: overrides.runCheckOnly ?? runCheckOnly,
     fileExists: existsSync,
     readFile: (candidate) => readFileSync(candidate, "utf-8"),
+    runOperation,
+    operationsScriptPath: resolveOperationsScriptPath(),
   });
 }
 
