@@ -9,8 +9,14 @@ import {
   runGodotImport,
   runOperation,
 } from "../../src/godot/runner.js";
-import { createUidTools } from "../../src/tools/uid.js";
-import { freshSampleProject, godotPath, hasGodot } from "./support.js";
+import { createUidTools, MIN_UID_GODOT_VERSION } from "../../src/tools/uid.js";
+import {
+  freshSampleProject,
+  godotPath,
+  godotVersionInfo,
+  hasGodot,
+  warnSkippedCoverage,
+} from "./support.js";
 
 function makeTools(overrides: { runOperation?: typeof runOperation } = {}) {
   return createUidTools({
@@ -45,7 +51,34 @@ function getTool<T extends { name: string }>(tools: T[], name: string): T {
 
 const UID_FORMAT = /^uid:\/\/[0-9a-z]+$/;
 
-describe.skipIf(!hasGodot)(
+/**
+ * This whole suite calls createUidTools' handlers DIRECTLY, bypassing
+ * registerAll's minGodotVersion gate (see version-gate.integration.test.ts
+ * for gate-rejection coverage) - it exists to verify the UID ops'
+ * underlying behavior, which requires Godot's actual Resource UID system
+ * (introduced in 4.4 - see tools/uid.ts's MIN_UID_GODOT_VERSION). On a CI
+ * matrix leg running an older Godot (deliberately included so the version
+ * gate's REJECTION path and list_resources' "uid gracefully absent" path
+ * get real coverage - see godot-prd.md §9 / Task 12's review), none of
+ * these assertions can hold, so the suite is skipped here - loudly, not
+ * silently - rather than failing on an assumption this suite was never
+ * meant to test. This is the "legitimately depends on >=4.4 behavior, skip
+ * loudly" case the Task 13 brief calls out; it does not represent lost
+ * coverage; the gate-rejection and uid-graceful-absence paths are each
+ * covered elsewhere specifically so this version leg isn't a blind spot.
+ */
+const belowUidMinVersion = hasGodot && godotVersionInfo!.isBelowUidMinVersion;
+if (belowUidMinVersion) {
+  warnSkippedCoverage(
+    "all get_uid / update_project_uids (integration) cases",
+    `probed Godot "${godotVersionInfo!.version}" is below ${MIN_UID_GODOT_VERSION} - this suite ` +
+      "exercises real Resource UID behavior that does not exist before 4.4. Covered instead on " +
+      "this version leg: version-gate.integration.test.ts (the gate REJECTS get_uid) and " +
+      "readback.integration.test.ts's list_resources cases (uid gracefully absent).",
+  );
+}
+
+describe.skipIf(!hasGodot || belowUidMinVersion)(
   "get_uid / update_project_uids (integration, real headless Godot)",
   () => {
     it("get_uid on a script matches the committed .uid sidecar file, independent of any resave", async () => {

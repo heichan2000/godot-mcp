@@ -102,14 +102,14 @@ func op_create_scene(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: the TS layer already confines scene_path inside
-	# project_path via assertInsideRoot before this script ever runs, but we
-	# re-check here since operations.gd can, in principle, be invoked
-	# directly.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment. The TS layer
+	# already confines scene_path inside project_path via assertInsideRoot
+	# before this script ever runs, but we re-check here since operations.gd
+	# can, in principle, be invoked directly - a TS-layer bug must not become
+	# an escape.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	var root_node_type: String = params.get("root_node_type", "Node2D")
 	if typeof(root_node_type) != TYPE_STRING or root_node_type.is_empty():
@@ -148,11 +148,10 @@ func op_add_node(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	if not params.has("node_type") or typeof(params["node_type"]) != TYPE_STRING or params["node_type"].is_empty():
 		return { "ok": false, "error": "Missing or invalid required param: node_type" }
@@ -239,19 +238,17 @@ func op_load_sprite(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	if not params.has("texture_path") or typeof(params["texture_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: texture_path" }
 	var texture_path: String = params["texture_path"]
-	if texture_path.is_empty():
-		return { "ok": false, "error": "texture_path must not be empty." }
-	if texture_path.contains(".."):
-		return { "ok": false, "error": "texture_path must not contain '..' segments: %s" % texture_path }
+	var texture_path_check := check_path_contained("texture_path", texture_path)
+	if not texture_path_check["ok"]:
+		return texture_path_check
 
 	var node_path: String = params.get("node_path", "")
 	if typeof(node_path) != TYPE_STRING:
@@ -320,17 +317,20 @@ func op_save_scene(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	var new_path: String = params.get("new_path", "")
 	if typeof(new_path) != TYPE_STRING:
 		new_path = ""
-	if not new_path.is_empty() and new_path.contains(".."):
-		return { "ok": false, "error": "new_path must not contain '..' segments: %s" % new_path }
+	# new_path is optional - "" means "no new_path" (save in place), so it is
+	# only containment-checked when the caller actually supplied one.
+	if not new_path.is_empty():
+		var new_path_check := check_path_contained("new_path", new_path)
+		if not new_path_check["ok"]:
+			return new_path_check
 
 	var res_path := to_res_path(scene_path)
 	if not FileAccess.file_exists(res_path):
@@ -384,19 +384,17 @@ func op_export_mesh_library(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	if not params.has("output_path") or typeof(params["output_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: output_path" }
 	var output_path: String = params["output_path"]
-	if output_path.is_empty():
-		return { "ok": false, "error": "output_path must not be empty." }
-	if output_path.contains(".."):
-		return { "ok": false, "error": "output_path must not contain '..' segments: %s" % output_path }
+	var output_path_check := check_path_contained("output_path", output_path)
+	if not output_path_check["ok"]:
+		return output_path_check
 
 	var mesh_item_names: Array = []
 	if params.has("mesh_item_names"):
@@ -488,11 +486,10 @@ func op_get_scene_tree(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	var res_path := to_res_path(scene_path)
 	if not FileAccess.file_exists(res_path):
@@ -542,11 +539,10 @@ func op_read_node_properties(params: Dictionary) -> Dictionary:
 	if not params.has("scene_path") or typeof(params["scene_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: scene_path" }
 	var scene_path: String = params["scene_path"]
-	if scene_path.is_empty():
-		return { "ok": false, "error": "scene_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if scene_path.contains(".."):
-		return { "ok": false, "error": "scene_path must not contain '..' segments: %s" % scene_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var scene_path_check := check_path_contained("scene_path", scene_path)
+	if not scene_path_check["ok"]:
+		return scene_path_check
 
 	if not params.has("node_path") or typeof(params["node_path"]) != TYPE_STRING or (params["node_path"] as String).is_empty():
 		return { "ok": false, "error": "Missing or invalid required param: node_path" }
@@ -628,11 +624,10 @@ func op_get_uid(params: Dictionary) -> Dictionary:
 	if not params.has("file_path") or typeof(params["file_path"]) != TYPE_STRING:
 		return { "ok": false, "error": "Missing or invalid required param: file_path" }
 	var file_path: String = params["file_path"]
-	if file_path.is_empty():
-		return { "ok": false, "error": "file_path must not be empty." }
-	# Defense in depth: see the matching comment in op_create_scene.
-	if file_path.contains(".."):
-		return { "ok": false, "error": "file_path must not contain '..' segments: %s" % file_path }
+	# Defense in depth: see check_path_contained's doc comment.
+	var file_path_check := check_path_contained("file_path", file_path)
+	if not file_path_check["ok"]:
+		return file_path_check
 
 	var res_path := to_res_path(file_path)
 	if not FileAccess.file_exists(res_path):
@@ -1054,6 +1049,71 @@ func collect_mesh_instances(node: Node, out: Array) -> void:
 		out.append(node)
 	for child in node.get_children():
 		collect_mesh_instances(child, out)
+
+## Defense-in-depth path containment (godot-prd.md §7.1). This is the SECOND
+## wall, not the first: the TS layer's assertInsideRoot (src/godot/paths.ts)
+## already confines every path parameter inside project_path before this
+## script ever runs, but operations.gd can, in principle, be invoked
+## directly - a bug in the TS layer must not become an escape. Centralizes
+## what used to be a scattered `some_path.contains("..")` substring check
+## duplicated in every op_* function, which false-positived on legitimate
+## filenames that merely happen to contain two consecutive dots somewhere,
+## e.g. "v2..0.tscn" (a prior review's finding).
+##
+## Segment-aware, not substring-based: splits the path on both "/" and "\"
+## and only rejects when a WHOLE segment equals "..", so "v2..0.tscn" (one
+## segment, not equal to "..") passes while "../v2.0.tscn" and "a/../b" do
+## not.
+##
+## Also independently rejects anything that is already absolute in a form
+## the TS layer should never let through in the first place:
+## - a leading "/" or "\" (POSIX-style, and the leading slashes of a UNC
+##   path like "\\server\share\...", which becomes "//server/share/..."
+##   once normalized)
+## - a drive-letter prefix, i.e. a second character of ":" (e.g. "C:",
+##   "C:\Windows\..." ) - ":" is not a legal path-segment character on
+##   Windows and is exotic enough elsewhere that treating it as an absolute-
+##   path marker is the safe default
+## - the "user://" scheme (Godot's separate, non-project data root - a
+##   completely different filesystem location than this project's res://)
+## A leading "res://" is allowed through unchanged (see to_res_path, which
+## special-cases it the same way) - it denotes THIS project's own virtual
+## root - but everything after that prefix is still segment-checked, so
+## "res://../../escape.tscn" is still rejected.
+##
+## Returns { "ok": true } when relative_path is safe to resolve against this
+## project, or { "ok": false, "error": "<param_name> ..." } naming the
+## specific violation - callers `return` this dictionary directly on
+## failure, the same shape every op_* function already returns.
+func check_path_contained(param_name: String, relative_path: String) -> Dictionary:
+	if typeof(relative_path) != TYPE_STRING or relative_path.is_empty():
+		return { "ok": false, "error": "%s must not be empty." % param_name }
+
+	if relative_path.to_lower().begins_with("user://"):
+		return {
+			"ok": false,
+			"error": "%s must not use the user:// scheme (a different root than this project's res://): %s" % [param_name, relative_path],
+		}
+
+	var remainder := relative_path
+	if remainder.begins_with("res://"):
+		remainder = remainder.substr(6)
+
+	if remainder.begins_with("/") or remainder.begins_with("\\"):
+		return { "ok": false, "error": "%s must not be an absolute path: %s" % [param_name, relative_path] }
+
+	if remainder.length() >= 2 and remainder.substr(1, 1) == ":":
+		return { "ok": false, "error": "%s must not be an absolute path: %s" % [param_name, relative_path] }
+
+	var normalized := remainder.replace("\\", "/")
+	for segment in normalized.split("/"):
+		if segment == "..":
+			return {
+				"ok": false,
+				"error": "%s must not contain '..' path segments: %s" % [param_name, relative_path],
+			}
+
+	return { "ok": true }
 
 func to_res_path(relative_path: String) -> String:
 	if relative_path.begins_with("res://"):

@@ -14,7 +14,8 @@ import {
 import { createProjectTools } from "../../src/tools/project.js";
 import { createReadbackTools } from "../../src/tools/readback.js";
 import { createSceneTools } from "../../src/tools/scene.js";
-import { freshSampleProject, godotPath, hasGodot } from "./support.js";
+import { MIN_UID_GODOT_VERSION } from "../../src/tools/uid.js";
+import { freshSampleProject, godotPath, godotVersionInfo, hasGodot } from "./support.js";
 
 interface SceneTreeNode {
   name: string;
@@ -421,7 +422,8 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
     }
   }, 60_000);
 
-  it("an unimported texture does not appear on a cold project (no error), but does after import_project - with a uid", async () => {
+  it("an unimported texture does not appear on a cold project (no error), but does after import_project - with a uid on Godot >= 4.4, or gracefully without one below that", async () => {
+    const belowUidMinVersion = godotVersionInfo!.isBelowUidMinVersion;
     const projectPath = freshSampleProject();
     expect(existsSync(path.join(projectPath, ".godot"))).toBe(false);
     const readbackTools = makeReadbackTools();
@@ -456,10 +458,19 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
     const sprite = warmStructured.resources.find((r) => r.path === "res://textures/sprite.png");
     expect(sprite).toBeDefined();
     expect(sprite!.type).toBe("CompressedTexture2D");
-    expect(sprite!.uid).toMatch(/^uid:\/\/[0-9a-z]+$/);
+    if (belowUidMinVersion) {
+      console.warn(
+        `[list_resources] probed Godot is below ${MIN_UID_GODOT_VERSION}: asserting uid is ` +
+          "gracefully absent rather than an empty/invalid string or an error.",
+      );
+      expect(sprite!.uid).toBeUndefined();
+    } else {
+      expect(sprite!.uid).toMatch(/^uid:\/\/[0-9a-z]+$/);
+    }
   }, 90_000);
 
   it("type filter narrows to exactly the matching subclass (Texture2D matches CompressedTexture2D)", async () => {
+    const belowUidMinVersion = godotVersionInfo!.isBelowUidMinVersion;
     const projectPath = freshSampleProject();
     const readbackTools = makeReadbackTools();
     const projectTools = makeProjectTools();
@@ -476,8 +487,17 @@ describe.skipIf(!hasGodot)("list_resources (integration, real headless Godot)", 
 
     expect(result.isError).toBeFalsy();
     const structured = result.structuredContent as { resources: ListedResource[] };
+    // uid is present (a real uid:// string) on Godot >= 4.4, and gracefully
+    // absent (never an error, never an empty placeholder) below that - see
+    // isBelowUidMinVersion's doc comment.
     expect(structured.resources).toEqual([
-      { path: "res://textures/sprite.png", type: "CompressedTexture2D", uid: expect.any(String) },
+      belowUidMinVersion
+        ? { path: "res://textures/sprite.png", type: "CompressedTexture2D" }
+        : {
+            path: "res://textures/sprite.png",
+            type: "CompressedTexture2D",
+            uid: expect.any(String),
+          },
     ]);
   }, 90_000);
 
