@@ -13,7 +13,7 @@ import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
 import { createUidTools, type UidToolsDeps } from "./tools/uid.js";
 
 const SERVER_NAME = "godot-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "1.0.0";
 
 export interface CreateServerOptions {
   /** Override tool dependencies (used by tests; production uses real env/fs/exec). */

@@ -518,9 +518,12 @@ export function createReadbackTools(deps: ReadbackToolsDeps = defaultDeps): Tool
       "{ resources: [{ path, type, uid? }] }: path is the resource's res:// path; type is its " +
       'actual Godot class (e.g. "CompressedTexture2D" for an imported .png, "PackedScene" for a ' +
       '.tscn, "GDScript" for a .gd script); uid (a uid://... string) is included only when ' +
-      "Godot has already assigned AND recognizes a UID for that resource (Godot >= 4.4, and the " +
-      "project has been scanned/imported at least once) - omitted, never erroring, otherwise. " +
-      "Optional type narrows results to resources whose class matches type exactly OR is a " +
+      "Godot has already assigned AND recognizes a UID for that resource. Imported assets (e.g. " +
+      "textures) have had resource UIDs since Godot 4.0, as long as the project has been " +
+      "scanned/imported at least once; scripts and scenes only get a UID via the .uid sidecar " +
+      "mechanism added in Godot 4.4 (see get_uid/update_project_uids) - either way, omitted " +
+      "rather than erroring when no UID is recognized yet. Optional type narrows results to " +
+      "resources whose class matches type exactly OR is a " +
       'subclass of it (so type: "Texture2D" also matches a CompressedTexture2D); a type Godot ' +
       "does not recognize as a class simply matches nothing. Always skips the internal .godot " +
       "directory (and any other dot-prefixed directory) and never lists outside project_path - " +
