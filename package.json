@@ -1,0 +1,67 @@
+{
+  "name": "@cradial/godot-mcp",
+  "version": "1.0.0",
+  "description": "MCP server that bridges AI agents to the Godot 4 game engine over stdio.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "godot",
+    "godot4",
+    "ai",
+    "agent",
+    "claude",
+    "llm-tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heichan2000/godot-mcp.git"
+  },
+  "homepage": "https://github.com/heichan2000/godot-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/heichan2000/godot-mcp/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "godot-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run format && npm test && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^20.19.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "eslint": "^9.39.4",
+    "prettier": "^3.9.4",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.1",
+    "vitest": "^4.1.9"
+  }
+}
