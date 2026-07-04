@@ -1,4 +1,4 @@
-# @heichan2000/godot-mcp
+# @cradial/godot-mcp
 
 An MCP (Model Context Protocol) server that bridges AI agents to the [Godot 4](https://godotengine.org/) game engine over stdio. Point an MCP-capable client (Claude Desktop, Claude Code, Cursor, Cline, ...) at it and the agent gets 19 tools to open, edit, run, and inspect a Godot 4 project — including a real write-then-read-back verify loop, so it can confirm a change actually landed instead of guessing.
 
@@ -35,7 +35,7 @@ You need a Godot 4.x executable on the machine already ([download](https://godot
 Register the server with a single command (this example uses the Claude Code CLI; see [per-client setup](#per-client-setup) for other clients):
 
 ```bash
-claude mcp add godot -- npx @heichan2000/godot-mcp
+claude mcp add godot -- npx @cradial/godot-mcp
 ```
 
 Then, from the agent, call `get_godot_version` with no arguments — it should return a `4.x.y` version string. That confirms the server is running and Godot resolution works.
@@ -50,7 +50,7 @@ From there, [`examples/sample-project`](examples/sample-project) is a minimal Go
 
 ## Per-client setup
 
-Every client below launches the same command: `npx @heichan2000/godot-mcp`. Set `GODOT_PATH` in the server's env if autodetection won't find your Godot install (see [configuration reference](#configuration-reference)).
+Every client below launches the same command: `npx @cradial/godot-mcp`. Set `GODOT_PATH` in the server's env if autodetection won't find your Godot install (see [configuration reference](#configuration-reference)).
 
 ### Claude Desktop
 
@@ -61,7 +61,7 @@ Edit your `claude_desktop_config.json` ([location varies by OS](https://modelcon
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "@heichan2000/godot-mcp"],
+      "args": ["-y", "@cradial/godot-mcp"],
       "env": {
         "GODOT_PATH": "/path/to/your/godot"
       }
@@ -81,7 +81,7 @@ Add to `.cursor/mcp.json` (project-local) or Cursor's global MCP settings:
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "@heichan2000/godot-mcp"],
+      "args": ["-y", "@cradial/godot-mcp"],
       "env": {
         "GODOT_PATH": "/path/to/your/godot"
       }
@@ -99,7 +99,7 @@ In Cline's MCP settings (VS Code: `cline_mcp_settings.json`, reachable from Clin
   "mcpServers": {
     "godot": {
       "command": "npx",
-      "args": ["-y", "@heichan2000/godot-mcp"],
+      "args": ["-y", "@cradial/godot-mcp"],
       "env": {
         "GODOT_PATH": "/path/to/your/godot"
       },

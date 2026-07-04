@@ -1,5 +1,5 @@
 {
-  "name": "@heichan2000/godot-mcp",
+  "name": "@cradial/godot-mcp",
   "version": "1.0.0",
   "description": "MCP server that bridges AI agents to the Godot 4 game engine over stdio.",
   "license": "MIT",

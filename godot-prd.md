@@ -2,6 +2,8 @@
 
 > **Package name (locked):** `@heichan2000/godot-mcp` — verified available on npm (2026-06-30). MCP client registration name stays plain `godot`.
 
+> **Amendment (2026-07-03):** published as `@cradial/godot-mcp` — the maintainer's npm account is `cradial`, so the scope changed at publish time. GitHub repo remains `heichan2000/godot-mcp`.
+
 > Status: Draft for `/to-issues`. This PRD is the single source of truth for breaking work into issues.
 > Scope owner: cradial2000@gmail.com · Created 2026-06-30
 
