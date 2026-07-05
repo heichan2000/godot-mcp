@@ -59,6 +59,7 @@ describe("loadConfig", () => {
     expect(loadConfig({ GODOT_MCP_PORT: "7000" }).bridgePort).toBe(7000);
     expect(loadConfig({ GODOT_MCP_PORT: "0" }).bridgePort).toBe(6510);
     expect(loadConfig({ GODOT_MCP_PORT: "not-a-port" }).bridgePort).toBe(6510);
+    expect(loadConfig({ GODOT_MCP_PORT: "70000" }).bridgePort).toBe(6510);
   });
 
   it("defaults bridgeTimeoutMs to 30000 and honors BRIDGE_TIMEOUT_MS", () => {

@@ -139,7 +139,11 @@ export class BridgeConnection {
   // would surface peer-death rejections as unhandled before the caller awaits).
   request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     if (this.state !== "connected" || this.socket === null) {
-      return Promise.reject(this.unavailableError());
+      const rejection = Promise.reject<unknown>(this.unavailableError());
+      // Backstop handler: see the identical comment below - a fire-and-forget
+      // caller on this early-guard path must not cause an unhandled rejection.
+      void rejection.catch(() => undefined);
+      return rejection;
     }
     const id = this.nextId++;
     const socket = this.socket;
@@ -234,21 +238,22 @@ export class BridgeConnection {
       this.log(`ignoring invalid frame: ${frame.reason}`);
       return;
     }
+    if (frame.kind === "hello_mismatch") {
+      this.clearHandshakeTimer();
+      this.mismatch = {
+        addonProtocolVersion: frame.protocolVersion,
+        serverProtocolVersion: PROTOCOL_VERSION,
+      };
+      this.setState("mismatch");
+      this.log(
+        `protocol mismatch: addon speaks v${frame.protocolVersion}, server speaks v${PROTOCOL_VERSION}`,
+      );
+      this.socket?.close(1002, "protocol version mismatch");
+      return;
+    }
     if (frame.kind === "hello") {
       this.clearHandshakeTimer();
       this.hello = frame.hello;
-      if (frame.hello.protocol_version !== PROTOCOL_VERSION) {
-        this.mismatch = {
-          addonProtocolVersion: frame.hello.protocol_version,
-          serverProtocolVersion: PROTOCOL_VERSION,
-        };
-        this.setState("mismatch");
-        this.log(
-          `protocol mismatch: addon speaks v${frame.hello.protocol_version}, server speaks v${PROTOCOL_VERSION}`,
-        );
-        this.socket?.close(1002, "protocol version mismatch");
-        return;
-      }
       this.mismatch = undefined;
       this.socket?.send(helloAck(this.options.serverVersion));
       this.setState("connected");

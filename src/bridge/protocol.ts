@@ -33,6 +33,19 @@ export const HelloSchema = z.object({
 });
 export type Hello = z.infer<typeof HelloSchema>;
 
+/**
+ * Minimal shape used to recognize a hello frame and read its
+ * `protocol_version` before attempting the full schema. A future addon
+ * speaking a different protocol version may rename, drop, or add required
+ * fields anywhere else in the hello - this schema only pins down the two
+ * fields the client needs in order to report a version mismatch (REQ-A-02)
+ * rather than misclassifying the frame as `invalid` and retrying forever.
+ */
+const HelloVersionSchema = z.object({
+  type: z.literal("hello"),
+  protocol_version: z.number().int(),
+});
+
 /** Error payload inside a response frame - same shape createErrorResponse consumes. */
 export const BridgeErrorSchema = z.object({
   code: z.string().optional(),
@@ -56,6 +69,7 @@ export interface RequestFrame {
 
 export type AddonFrame =
   | { kind: "hello"; hello: Hello }
+  | { kind: "hello_mismatch"; protocolVersion: number }
   | { kind: "response"; response: ResponseFrame }
   | { kind: "invalid"; reason: string };
 
@@ -63,6 +77,13 @@ export type AddonFrame =
  * Classifies one inbound text frame from the addon. Never throws: transport
  * code branches on `kind` and logs invalid frames instead of crashing the
  * connection over one bad packet.
+ *
+ * Hello frames are classified in two stages so a protocol-version mismatch
+ * is always reported as a mismatch, never as `invalid` (REQ-A-02): first the
+ * frame is matched against the minimal `HelloVersionSchema` to read
+ * `protocol_version` regardless of what else the frame contains; only once
+ * that version matches `PROTOCOL_VERSION` is the full `HelloSchema` applied.
+ * A same-version hello that fails the full schema is still `invalid`.
  */
 export function parseAddonFrame(text: string): AddonFrame {
   let raw: unknown;
@@ -74,8 +95,18 @@ export function parseAddonFrame(text: string): AddonFrame {
   if (typeof raw !== "object" || raw === null) {
     return { kind: "invalid", reason: "frame is not a JSON object" };
   }
-  const hello = HelloSchema.safeParse(raw);
-  if (hello.success) return { kind: "hello", hello: hello.data };
+  const helloVersion = HelloVersionSchema.safeParse(raw);
+  if (helloVersion.success) {
+    if (helloVersion.data.protocol_version !== PROTOCOL_VERSION) {
+      return { kind: "hello_mismatch", protocolVersion: helloVersion.data.protocol_version };
+    }
+    const hello = HelloSchema.safeParse(raw);
+    if (hello.success) return { kind: "hello", hello: hello.data };
+    return {
+      kind: "invalid",
+      reason: "hello frame matches this protocol version but fails full validation",
+    };
+  }
   const response = ResponseFrameSchema.safeParse(raw);
   if (response.success && ("result" in raw || "error" in raw)) {
     return { kind: "response", response: response.data };

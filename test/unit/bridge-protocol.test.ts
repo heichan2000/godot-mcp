@@ -55,6 +55,31 @@ describe("parseAddonFrame", () => {
       "invalid",
     );
   });
+
+  it("classifies a future-protocol hello as a mismatch naming both versions, not invalid", () => {
+    const futureHello = {
+      type: "hello",
+      protocol_version: 2,
+      // No addon_version, no godot_version, no features, no project_path -
+      // a v2 addon may have renamed/dropped/added any of these. An
+      // unrecognizable extra field is thrown in too.
+      surprise_field: "unrecognizable",
+    };
+    const frame = parseAddonFrame(JSON.stringify(futureHello));
+    expect(frame.kind).toBe("hello_mismatch");
+    if (frame.kind !== "hello_mismatch") throw new Error("unreachable");
+    expect(frame.protocolVersion).toBe(2);
+    expect(frame.protocolVersion).not.toBe(PROTOCOL_VERSION);
+  });
+
+  it("still rejects a same-version hello with a malformed body as invalid", () => {
+    const malformed = {
+      type: "hello",
+      protocol_version: PROTOCOL_VERSION,
+      // Missing addon_version, godot_version, features, project_path.
+    };
+    expect(parseAddonFrame(JSON.stringify(malformed)).kind).toBe("invalid");
+  });
 });
 
 describe("encodeRequest / helloAck", () => {

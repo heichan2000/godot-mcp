@@ -97,6 +97,22 @@ describe("BridgeConnection", () => {
     });
   });
 
+  it("flags a mismatch for a future-protocol hello even when the rest of the body is unrecognizable", async () => {
+    const peer = await startPeer({
+      protocolVersion: 2,
+      helloOverrides: { addon_version: undefined as unknown as string },
+    });
+    const bridge = startConnection(peer.url);
+    await bridge.waitForState("mismatch", 5_000);
+    const rejection = bridge.request("system/status");
+    await expect(rejection).rejects.toBeInstanceOf(BridgeUnavailableError);
+    await rejection.catch((error: Error) => {
+      expect(error.message).toContain("2");
+      expect(error.message).toContain(String(PROTOCOL_VERSION));
+      expect(error.message.toLowerCase()).toContain("update");
+    });
+  });
+
   it("rejects requests while disconnected", async () => {
     const bridge = startConnection("ws://127.0.0.1:1"); // nothing listens on port 1
     await expect(bridge.request("system/status")).rejects.toBeInstanceOf(BridgeUnavailableError);
