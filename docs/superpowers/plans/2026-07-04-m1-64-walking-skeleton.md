@@ -25,9 +25,11 @@
 ### Task 1: Cut the 1.x line, start the v2 line
 
 **Files:**
+
 - Modify: `package.json` (version, description, deps)
 
 **Interfaces:**
+
 - Produces: branch `1.x` (pushed later with the PR), working branch `m1/64-walking-skeleton`, `ws` + `@types/ws` installed, version `2.0.0-alpha.0`.
 
 - [ ] **Step 1: Create the maintenance branch and the working branch**
@@ -63,10 +65,12 @@ git commit -m "chore: start v2 line (2.0.0-alpha.0); 1.x maintenance branch cut 
 ### Task 2: Bridge protocol module
 
 **Files:**
+
 - Create: `src/bridge/protocol.ts`
 - Test: `test/unit/bridge-protocol.test.ts`
 
 **Interfaces:**
+
 - Produces: `PROTOCOL_VERSION: 1`; `Hello`, `ResponseFrame`, `BridgeErrorPayload`, `RequestFrame` types; `parseAddonFrame(text): AddonFrame` (`{kind:"hello"|"response"|"invalid"}`); `helloAck(serverVersion): string`; `encodeRequest(frame): string`. Consumed by connection.ts, fake peer, addon parity.
 
 - [ ] **Step 1: Write the failing tests**
@@ -127,9 +131,9 @@ describe("parseAddonFrame", () => {
   });
 
   it("rejects a hello with a non-integer protocol_version", () => {
-    expect(
-      parseAddonFrame(JSON.stringify({ ...validHello, protocol_version: "1" })).kind,
-    ).toBe("invalid");
+    expect(parseAddonFrame(JSON.stringify({ ...validHello, protocol_version: "1" })).kind).toBe(
+      "invalid",
+    );
   });
 });
 
@@ -276,9 +280,11 @@ git commit -m "feat: versioned bridge protocol envelope + handshake codec (REQ-A
 ### Task 3: Fake addon peer (unit-test harness, no Godot)
 
 **Files:**
+
 - Create: `test/support/fake-addon-peer.ts`
 
 **Interfaces:**
+
 - Produces: `FakeAddonPeer.start(options): Promise<FakeAddonPeer>` with `port`, `url`, `requests[]`, `acks[]`, `close()`. Options: `port?` (default ephemeral), `protocolVersion?`, `helloOverrides?`, `omitHello?`, `handlers?: Record<string, (params) => unknown | Promise<unknown>>`; a handler may return `{ __error: BridgeErrorPayload }` to send an error frame. Consumed by Tasks 4, 5, 7.
 
 - [ ] **Step 1: Implement (exercised by Task 4's tests — test infra carries no own suite)**
@@ -304,7 +310,10 @@ export interface FakeAddonPeerOptions {
   /** When true, never sends hello - exercises the client's handshake timeout. */
   omitHello?: boolean;
   /** Bridge method -> handler. Missing methods get an unknown_method error frame. */
-  handlers?: Record<string, (params: Record<string, unknown>) => HandlerResult | Promise<HandlerResult>>;
+  handlers?: Record<
+    string,
+    (params: Record<string, unknown>) => HandlerResult | Promise<HandlerResult>
+  >;
 }
 
 /**
@@ -410,7 +419,9 @@ export class FakeAddonPeer {
     }
     const outcome = await handler(params);
     if (typeof outcome === "object" && outcome !== null && "__error" in outcome) {
-      socket.send(JSON.stringify({ id, error: (outcome as { __error: BridgeErrorPayload }).__error }));
+      socket.send(
+        JSON.stringify({ id, error: (outcome as { __error: BridgeErrorPayload }).__error }),
+      );
       return;
     }
     socket.send(JSON.stringify({ id, result: outcome }));
@@ -435,10 +446,12 @@ git commit -m "test: fake addon peer - in-process bridge endpoint for Godot-free
 ### Task 4: BridgeConnection client (reconnect, correlation, timeout, mismatch)
 
 **Files:**
+
 - Create: `src/bridge/connection.ts`
 - Test: `test/unit/bridge-connection.test.ts`
 
 **Interfaces:**
+
 - Consumes: protocol.ts exports; FakeAddonPeer.
 - Produces:
   - `type BridgeState = "connecting" | "handshaking" | "connected" | "mismatch" | "disconnected"`
@@ -737,7 +750,12 @@ export class BridgeConnection {
           if (entry) {
             clearTimeout(entry.timer);
             this.pending.delete(id);
-            reject(new BridgeUnavailableError(`Failed to send to the editor: ${error.message}`, this.state));
+            reject(
+              new BridgeUnavailableError(
+                `Failed to send to the editor: ${error.message}`,
+                this.state,
+              ),
+            );
           }
         }
       });
@@ -750,7 +768,11 @@ export class BridgeConnection {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.emitter.off("state", onState);
-        reject(new Error(`Timed out after ${timeoutMs}ms waiting for bridge state "${state}" (currently "${this.state}")`));
+        reject(
+          new Error(
+            `Timed out after ${timeoutMs}ms waiting for bridge state "${state}" (currently "${this.state}")`,
+          ),
+        );
       }, timeoutMs);
       const onState = (next: BridgeState) => {
         if (next === state) {
@@ -916,10 +938,12 @@ git commit -m "feat: reconnecting bridge client - handshake, correlation, timeou
 ### Task 5: Bridge tools — `bridge_status` + `get_godot_version`
 
 **Files:**
+
 - Create: `src/tools/bridge.ts`
 - Test: `test/unit/bridge-tools.test.ts`
 
 **Interfaces:**
+
 - Consumes: `BridgeConnection` + error classes; `createErrorResponse`; `ToolDescriptor`.
 - Produces: `interface BridgePort { status(): BridgeStatus; request(method, params?): Promise<unknown> }`; `createBridgeTools(deps: { bridge: BridgePort; serverVersion: string }): ToolDescriptor[]`; `EDITOR_NOT_CONNECTED_SOLUTIONS: string[]`; `bridgeErrorToResponse(error: unknown)`. Consumed by server.ts (Task 6) and every future tool slice (#65–#77 reuse `bridgeErrorToResponse` + the solutions constant).
 
@@ -966,7 +990,10 @@ async function connectedBridge(options: Parameters<typeof FakeAddonPeer.start>[0
   });
   bridge.start();
   cleanups.push(() => bridge.stop());
-  await bridge.waitForState(options.protocolVersion === undefined ? "connected" : "mismatch", 5_000);
+  await bridge.waitForState(
+    options.protocolVersion === undefined ? "connected" : "mismatch",
+    5_000,
+  );
   return bridge;
 }
 
@@ -1011,7 +1038,8 @@ describe("get_godot_version", () => {
     cleanups.push(() => bridge.stop());
     const result = await call(bridge, "get_godot_version");
     expect(result.isError).toBe(true);
-    const solutions = (result.structuredContent as { possibleSolutions: string[] }).possibleSolutions;
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
     expect(solutions.join(" ").toLowerCase()).toContain("editor");
   });
@@ -1067,11 +1095,7 @@ Expected: FAIL — cannot resolve `src/tools/bridge.js`.
 import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgeStatus } from "../bridge/connection.js";
-import {
-  BridgeOpError,
-  BridgeTimeoutError,
-  BridgeUnavailableError,
-} from "../bridge/connection.js";
+import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../bridge/connection.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
 export interface BridgePort {
@@ -1238,12 +1262,14 @@ git commit -m "feat: bridge_status + get_godot_version served over the bridge (R
 ### Task 6: Retire the headless path; rewire server, registry, config
 
 **Files:**
+
 - Delete: `src/godot/runner.ts`, `src/godot/process.ts`, `src/godot/discovery.ts`, `src/godot/cache.ts`, `src/godot/script-errors.ts`, `src/godot/version-gate.ts`, `src/godot/operations.gd`, `src/tools/editor.ts`, `src/tools/project.ts`, `src/tools/readback.ts`, `src/tools/run.ts`, `src/tools/scene.ts`, `src/tools/uid.ts`, `src/tools/operation-result.ts`
 - Delete tests: `test/unit/editor-tools.test.ts`, `test/unit/project-tools.test.ts`, `test/unit/readback-tools.test.ts`, `test/unit/run-tools.test.ts`, `test/unit/runner.test.ts`, `test/unit/scene-tools.test.ts`, `test/unit/uid-tools.test.ts`, `test/unit/script-errors.test.ts`, `test/unit/process.test.ts`, `test/unit/discovery.test.ts`, `test/unit/godot-cache.test.ts`, `test/unit/version-gate.test.ts`, entire `test/integration/` directory (rebuilt in Task 9)
 - Modify: `src/registry.ts`, `src/server.ts`, `src/config.ts`, `src/index.ts` (unchanged import path — verify only), `tsup.config.ts`, `vitest.config.ts`
 - Rewrite tests: `test/unit/server.test.ts`, `test/unit/registry.test.ts` (drop gate cases), `test/unit/config.test.ts` (add new keys)
 
 **Interfaces:**
+
 - Produces: `SERVER_VERSION = "2.0.0-alpha.0"` (exported from server.ts); `buildToolInventory(deps: { bridge: BridgePort }): ToolDescriptor[]`; `createServer(options: { bridge: BridgePort }): McpServer`; `createShutdown({ stopBridge, closeServer, exit, debugLog })`; config gains `bridgePort` (`GODOT_MCP_PORT`, default 6510) and `bridgeTimeoutMs` (`BRIDGE_TIMEOUT_MS`, default 30000). `registry.ts` loses `minGodotVersion`/version-gate entirely (reintroduced handshake-keyed by #71). Consumed by Tasks 7 and 9.
 
 - [ ] **Step 1: Delete the retired modules and their tests**
@@ -1522,7 +1548,13 @@ Note: `resolveBundledAddonDir` resolves relative to the module file; from `src/`
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { SERVER_VERSION, buildToolInventory, createServer, createShutdown, packageJsonVersion } from "../../src/server.js";
+import {
+  SERVER_VERSION,
+  buildToolInventory,
+  createServer,
+  createShutdown,
+  packageJsonVersion,
+} from "../../src/server.js";
 import type { BridgePort } from "../../src/tools/bridge.js";
 
 const stubBridge: BridgePort = {
@@ -1606,7 +1638,7 @@ const COVERAGE_INCLUDE = [
 - [ ] **Step 7: Full local gate**
 
 Run: `npm run format:fix; npm run lint; npm run typecheck; npm test`
-Expected: ALL PASS. Coverage thresholds hold (protocol.ts is fully covered by Task 2's tests). If lint flags unused exports in `schemas.ts` (its consumers were deleted), do NOT delete the schemas — suppress nothing; they're consumed again by #66/#67. If eslint complains about genuinely-unused *imports* in kept files, fix those imports.
+Expected: ALL PASS. Coverage thresholds hold (protocol.ts is fully covered by Task 2's tests). If lint flags unused exports in `schemas.ts` (its consumers were deleted), do NOT delete the schemas — suppress nothing; they're consumed again by #66/#67. If eslint complains about genuinely-unused _imports_ in kept files, fix those imports.
 
 - [ ] **Step 8: Commit**
 
@@ -1620,9 +1652,11 @@ git commit -m "feat!: retire headless execution path; server runs on the editor 
 ### Task 7: REQ-A-05 naming lint + strategy doc
 
 **Files:**
+
 - Create: `test/unit/naming-lint.test.ts`, `docs/tool-naming.md`
 
 **Interfaces:**
+
 - Consumes: `buildToolInventory`, `BridgePort`.
 - Produces: the standing lint every future slice must pass (it runs in `npm test`, which CI runs — that makes it "a CI lint" per REQ-A-05).
 
@@ -1722,7 +1756,7 @@ context-discipline strategy enforced by a standing lint
    the zod schemas, error guidance belongs in `possibleSolutions`.
 3. **Params**: `snake_case` keys, validated by zod schemas
    (`src/schemas.ts` fragments where shared).
-4. **Uniqueness**: duplicate names fail registration (`registerAll`) *and*
+4. **Uniqueness**: duplicate names fail registration (`registerAll`) _and_
    the lint.
 
 ## Strategy (human judgment, reviewed at PR time)
@@ -1755,9 +1789,11 @@ git commit -m "feat: REQ-A-05 naming lint (standing CI gate) + strategy doc"
 ### Task 8: The editor addon (GDScript)
 
 **Files:**
+
 - Create: `addon/godot_mcp/plugin.cfg`, `addon/godot_mcp/plugin.gd`, `addon/godot_mcp/server.gd`
 
 **Interfaces:**
+
 - Produces: WebSocket server on `127.0.0.1:<godot_mcp/network/port or 6510>` inside the editor; sends `hello`; serves `system/status`; refuses a second client; logs to the editor Output panel. Version string in `plugin.cfg` must equal `SERVER_VERSION` (2.0.0-alpha.0) — the handshake carries it.
 - Consumed by: Task 9's integration harness; #65+ add ops to `_dispatch`.
 
@@ -1994,10 +2030,12 @@ git commit -m "feat: godot_mcp editor addon - loopback WS bridge, hello handshak
 ### Task 9: Sample project wiring + real-editor integration harness
 
 **Files:**
+
 - Modify: `examples/sample-project/project.godot` (enable the plugin; keep existing content), `.gitignore` (ignore `examples/sample-project/addons/`), `vitest.integration.config.ts` (timeouts)
 - Create: `test/integration/support.ts` (rewrite from scratch — old one was deleted in Task 6), `test/integration/bridge.integration.test.ts`
 
 **Interfaces:**
+
 - Consumes: `BridgeConnection`, `createServer`, `SERVER_VERSION`, `resolveBundledAddonDir`, MCP SDK `Client` + `InMemoryTransport`.
 - Produces: `support.ts` exports `godotPath`, `hasGodot`, `freshSampleProject()`, `installAddon(projectDir)`, `setBridgePort(projectDir, port)`, `pickFreePort()`, `launchEditor(projectDir)`, `importPass(projectDir)`, `warnSkippedCoverage()` — reused by every later integration slice.
 
@@ -2284,9 +2322,11 @@ git commit -m "test: real-editor integration harness - boot editor, handshake, s
 ### Task 10: CI — editor-under-xvfb matrix (the #64 spike, now enforced)
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
+
 - Produces: unit job unchanged (ubuntu + windows); integration job = ubuntu × the two supported stable minors, full editor under xvfb; the old headless-specific `integration-windows-smoke` job is removed (its rationale — headless Godot filesystem semantics — retired with the headless path; the v2 Windows integration leg is #77's matrix-completion call).
 
 - [ ] **Step 1: Replace the `integration` and delete the `integration-windows-smoke` jobs**
@@ -2294,45 +2334,45 @@ git commit -m "test: real-editor integration harness - boot editor, handshake, s
 New `integration` job (keep the `unit` job exactly as-is):
 
 ```yaml
-  integration:
-    name: integration (ubuntu, Godot ${{ matrix.godot_version }} editor under xvfb)
-    strategy:
-      fail-fast: false
-      matrix:
-        # Rolling policy (REQ-A-07): the latest 2 stable Godot minors. Bump
-        # both entries deliberately when a new stable minor ships; #77 gates
-        # the release on this matrix being green.
-        godot_version: ["4.6-stable", "4.7-stable"]
-    runs-on: ubuntu-latest
-    env:
-      GODOT_VERSION: ${{ matrix.godot_version }}
-    steps:
-      - uses: actions/checkout@v4
+integration:
+  name: integration (ubuntu, Godot ${{ matrix.godot_version }} editor under xvfb)
+  strategy:
+    fail-fast: false
+    matrix:
+      # Rolling policy (REQ-A-07): the latest 2 stable Godot minors. Bump
+      # both entries deliberately when a new stable minor ships; #77 gates
+      # the release on this matrix being green.
+      godot_version: ["4.6-stable", "4.7-stable"]
+  runs-on: ubuntu-latest
+  env:
+    GODOT_VERSION: ${{ matrix.godot_version }}
+  steps:
+    - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: "npm"
 
-      - name: Install dependencies
-        run: npm ci
+    - name: Install dependencies
+      run: npm ci
 
-      - name: Download Godot ${{ env.GODOT_VERSION }} (linux x86_64, full editor build)
-        run: |
-          curl -sL -o godot.zip \
-            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
-          unzip -q godot.zip -d godot-bin
-          chmod +x "godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
-          echo "GODOT_PATH=$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
+    - name: Download Godot ${{ env.GODOT_VERSION }} (linux x86_64, full editor build)
+      run: |
+        curl -sL -o godot.zip \
+          "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+        unzip -q godot.zip -d godot-bin
+        chmod +x "godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
+        echo "GODOT_PATH=$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
 
-      - name: Sanity-check the downloaded Godot binary
-        run: "$GODOT_PATH --version"
+    - name: Sanity-check the downloaded Godot binary
+      run: "$GODOT_PATH --version"
 
-      # The #64 feasibility spike, enforced forever after: a real editor
-      # process under a virtual display, the bundled addon, a WebSocket
-      # handshake, and tool calls through the bridge.
-      - name: Integration tests (real editor under xvfb)
-        run: xvfb-run --auto-servernum npm run test:integration
+    # The #64 feasibility spike, enforced forever after: a real editor
+    # process under a virtual display, the bundled addon, a WebSocket
+    # handshake, and tool calls through the bridge.
+    - name: Integration tests (real editor under xvfb)
+      run: xvfb-run --auto-servernum npm run test:integration
 ```
 
 - [ ] **Step 2: Sanity-check workflow syntax**
