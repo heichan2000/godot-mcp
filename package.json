@@ -1,7 +1,7 @@
 {
   "name": "@cradial/godot-mcp",
-  "version": "1.0.0",
-  "description": "MCP server that bridges AI agents to the Godot 4 game engine over stdio.",
+  "version": "2.0.0-alpha.0",
+  "description": "MCP server that bridges AI agents to a live Godot 4 editor via the Godot MCP addon.",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -51,11 +51,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^20.19.0",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.9",
     "eslint": "^9.39.4",
     "prettier": "^3.9.4",
