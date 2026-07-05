@@ -1,0 +1,97 @@
+import { z } from "zod";
+
+/**
+ * Bridge protocol version, mirrored by the addon's PROTOCOL_VERSION
+ * (addon/godot_mcp/server.gd). Bump BOTH on any breaking envelope or
+ * handshake change; the client refuses to talk across a mismatch
+ * (REQ-A-02) rather than guessing.
+ */
+export const PROTOCOL_VERSION = 1;
+
+export const GodotVersionSchema = z.object({
+  major: z.number().int(),
+  minor: z.number().int(),
+  patch: z.number().int(),
+  status: z.string(),
+});
+export type GodotVersion = z.infer<typeof GodotVersionSchema>;
+
+/**
+ * First frame the addon sends after the WebSocket opens (REQ-A-02). The
+ * feature map is open-ended (`catchall`) so future addon versions can add
+ * flags without a protocol bump; `dotnet` is the one every consumer may
+ * rely on today.
+ */
+export const HelloSchema = z.object({
+  type: z.literal("hello"),
+  protocol_version: z.number().int(),
+  addon_version: z.string(),
+  godot_version: GodotVersionSchema,
+  godot_version_string: z.string(),
+  features: z.object({ dotnet: z.boolean() }).catchall(z.boolean()),
+  project_path: z.string(),
+});
+export type Hello = z.infer<typeof HelloSchema>;
+
+/** Error payload inside a response frame - same shape createErrorResponse consumes. */
+export const BridgeErrorSchema = z.object({
+  code: z.string().optional(),
+  message: z.string(),
+  possibleSolutions: z.array(z.string()).optional(),
+});
+export type BridgeErrorPayload = z.infer<typeof BridgeErrorSchema>;
+
+export const ResponseFrameSchema = z.object({
+  id: z.number().int(),
+  result: z.unknown().optional(),
+  error: BridgeErrorSchema.optional(),
+});
+export type ResponseFrame = z.infer<typeof ResponseFrameSchema>;
+
+export interface RequestFrame {
+  id: number;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export type AddonFrame =
+  | { kind: "hello"; hello: Hello }
+  | { kind: "response"; response: ResponseFrame }
+  | { kind: "invalid"; reason: string };
+
+/**
+ * Classifies one inbound text frame from the addon. Never throws: transport
+ * code branches on `kind` and logs invalid frames instead of crashing the
+ * connection over one bad packet.
+ */
+export function parseAddonFrame(text: string): AddonFrame {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { kind: "invalid", reason: "frame is not valid JSON" };
+  }
+  if (typeof raw !== "object" || raw === null) {
+    return { kind: "invalid", reason: "frame is not a JSON object" };
+  }
+  const hello = HelloSchema.safeParse(raw);
+  if (hello.success) return { kind: "hello", hello: hello.data };
+  const response = ResponseFrameSchema.safeParse(raw);
+  if (response.success && ("result" in raw || "error" in raw)) {
+    return { kind: "response", response: response.data };
+  }
+  return { kind: "invalid", reason: "frame matches neither hello nor response shape" };
+}
+
+/** The client's reply to a hello - lets the addon log/flag the server it serves. */
+export function helloAck(serverVersion: string): string {
+  return JSON.stringify({
+    type: "hello_ack",
+    server_version: serverVersion,
+    protocol_version: PROTOCOL_VERSION,
+  });
+}
+
+export function encodeRequest(frame: RequestFrame): string {
+  return JSON.stringify(frame);
+}
