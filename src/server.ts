@@ -1,125 +1,103 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { BridgeConnection } from "./bridge/connection.js";
 import { loadConfig } from "./config.js";
-import type { GodotVersionGate } from "./godot/version-gate.js";
-import { assertOperationsScriptExists, resolveOperationsScriptPath } from "./godot/runner.js";
-import type { GodotProcessManager } from "./godot/process.js";
-import { registerAll } from "./registry.js";
-import { createEditorTools, type EditorToolsDeps } from "./tools/editor.js";
-import { createProjectTools, type ProjectToolsDeps } from "./tools/project.js";
-import { createReadbackTools, type ReadbackToolsDeps } from "./tools/readback.js";
-import { createRunTools, defaultProcessManager, type RunToolsDeps } from "./tools/run.js";
-import { createSceneTools, type SceneToolsDeps } from "./tools/scene.js";
-import { createUidTools, type UidToolsDeps } from "./tools/uid.js";
+import { registerAll, type ToolDescriptor } from "./registry.js";
+import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
 
 const SERVER_NAME = "godot-mcp";
-const SERVER_VERSION = "1.0.0";
+/** Kept in lockstep with package.json - asserted by test/unit/server.test.ts. */
+export const SERVER_VERSION = "2.0.0-alpha.0";
 
-export interface CreateServerOptions {
-  /** Override tool dependencies (used by tests; production uses real env/fs/exec). */
-  editorToolsDeps?: EditorToolsDeps;
-  sceneToolsDeps?: SceneToolsDeps;
-  projectToolsDeps?: ProjectToolsDeps;
-  runToolsDeps?: RunToolsDeps;
-  uidToolsDeps?: UidToolsDeps;
-  readbackToolsDeps?: ReadbackToolsDeps;
-  /**
-   * Overrides the shared minGodotVersion gate (see registry.ts) used for
-   * get_uid/update_project_uids. Defaults to a fresh, production
-   * `createGodotVersionGate()` - constructing the default does not itself
-   * probe Godot, so startup still succeeds with no Godot installed.
-   */
-  versionGate?: GodotVersionGate;
+export interface ServerDeps {
+  bridge: BridgePort;
 }
 
 /**
- * Builds the MCP server and registers every tool descriptor. Pure wiring:
- * no Godot resolution happens here, so this always succeeds even with no
- * Godot installed.
+ * The complete tool inventory, in registration order. Exported (rather than
+ * inlined in createServer) so the REQ-A-05 naming lint and the REQ-M-03
+ * code-exec audit (#76) can walk exactly what ships, with a stub bridge.
  */
-export function createServer(options: CreateServerOptions = {}): McpServer {
+export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
+  return [...createBridgeTools({ bridge: deps.bridge, serverVersion: SERVER_VERSION })];
+}
+
+/** Builds the MCP server and registers every tool. Pure wiring; never touches the network itself. */
+export function createServer(deps: ServerDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  const tools = [
-    ...createEditorTools(options.editorToolsDeps),
-    ...createSceneTools(options.sceneToolsDeps),
-    ...createProjectTools(options.projectToolsDeps),
-    ...createRunTools(options.runToolsDeps),
-    ...createUidTools(options.uidToolsDeps),
-    ...createReadbackTools(options.readbackToolsDeps),
-  ];
-  registerAll(server, tools, { versionGate: options.versionGate });
+  registerAll(server, buildToolInventory(deps));
   return server;
 }
 
 export interface CreateShutdownOptions {
-  /** The manager owning any active run_project child (see tools/run.ts's defaultProcessManager). */
-  processManager: Pick<GodotProcessManager, "stop">;
+  stopBridge: () => Promise<void>;
   closeServer: () => Promise<void>;
   exit: (code: number) => void;
   debugLog: (message: string) => void;
 }
 
 /**
- * Builds the signal handler that tears the server down. Kills any active
- * `run_project` child first: it is a plain non-detached spawn (unlike
- * `launch_editor`'s deliberately detached editor), so exiting without
- * stopping it would orphan a Godot process that keeps running indefinitely
- * after Ctrl-C. Exits even if closing the server fails - shutdown must
- * never hang.
+ * Tears down bridge + server on SIGINT/SIGTERM. Exits even if either close
+ * fails - shutdown must never hang.
  */
 export function createShutdown(options: CreateShutdownOptions): (signal: string) => void {
   return (signal) => {
     options.debugLog(`received ${signal}, shutting down`);
-    try {
-      options.processManager.stop();
-    } catch {
-      // Best-effort: an already-dead child must not block shutdown.
-    }
-    void options
-      .closeServer()
-      .catch((error: unknown) => {
-        // A close failure must neither block the exit below nor surface as
-        // an unhandled rejection during shutdown.
-        options.debugLog(`server close failed: ${String(error)}`);
+    void Promise.allSettled([options.stopBridge(), options.closeServer()])
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            options.debugLog(`shutdown step failed: ${String(result.reason)}`);
+          }
+        }
       })
       .finally(() => options.exit(0));
   };
 }
 
-/** Starts the server over stdio. Logs (stderr only) are gated by DEBUG. */
+/** Sanity check that the packaged addon payload shipped next to the build (successor of 1.0's operations.gd check). */
+export function resolveBundledAddonDir(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "addon", "godot_mcp");
+}
+
+/** Starts the server over stdio. Logs (stderr only) are gated by DEBUG (REQ-A-09/M-07). */
 export async function main(): Promise<void> {
   const config = loadConfig();
   const debugLog = (message: string) => {
     if (config.debug) console.error(`[godot-mcp] ${message}`);
   };
 
-  debugLog("starting stdio MCP server");
+  debugLog("starting stdio MCP server (v2 bridge mode)");
 
-  // The bundled dispatcher must exist next to the built server code before
-  // we accept any tool calls - a missing operations.gd means the
-  // install/build itself is broken, not a user-fixable env issue, so this
-  // check runs eagerly at startup (unlike Godot executable resolution,
-  // which stays lazy per-call).
-  try {
-    assertOperationsScriptExists(resolveOperationsScriptPath());
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[godot-mcp] ${message}`);
-    process.exit(1);
-  }
+  const bridge = new BridgeConnection({
+    url: `ws://127.0.0.1:${config.bridgePort}`,
+    serverVersion: SERVER_VERSION,
+    requestTimeoutMs: config.bridgeTimeoutMs,
+    log: debugLog,
+  });
+  bridge.start();
 
-  const server = createServer();
+  const server = createServer({ bridge });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  debugLog("connected; awaiting requests over stdio");
+  debugLog(`connected; bridging to ws://127.0.0.1:${config.bridgePort}`);
 
   const shutdown = createShutdown({
-    processManager: defaultProcessManager,
+    stopBridge: () => bridge.stop(),
     closeServer: () => server.close(),
     exit: (code) => process.exit(code),
     debugLog,
   });
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+/** Test hook: reads package.json's version for the lockstep assertion. */
+export function packageJsonVersion(): string {
+  const packagePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  return (JSON.parse(readFileSync(packagePath, "utf8")) as { version: string }).version;
 }

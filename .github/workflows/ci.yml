@@ -55,22 +55,14 @@ jobs:
         run: npm run build
 
   integration:
-    name: integration (ubuntu, Godot ${{ matrix.godot_version }})
+    name: integration (ubuntu, Godot ${{ matrix.godot_version }} editor under xvfb)
     strategy:
       fail-fast: false
       matrix:
-        # One version < 4.4 and one >= 4.4 (godot-prd.md §9; Task 12's
-        # review carried into Task 13's brief): Resource UIDs - and
-        # therefore both the UID tools' minGodotVersion call-time
-        # REJECTION path and list_resources' "uid gracefully absent" path -
-        # only exist from 4.4 onward, so a single-version matrix could
-        # never exercise the "too old" half of that logic. 4.3-stable was
-        # picked as the <4.4 leg (rather than reaching further back) as the
-        # newest release still below the 4.4 cutoff; 4.7-stable is kept as
-        # the latest stable 4.x release as of writing (bump deliberately
-        # when a newer 4.x stable ships - keep it in sync with the
-        # windows-smoke job below).
-        godot_version: ["4.3-stable", "4.7-stable"]
+        # Rolling policy (REQ-A-07): the latest 2 stable Godot minors. Bump
+        # both entries deliberately when a new stable minor ships; #77 gates
+        # the release on this matrix being green.
+        godot_version: ["4.6-stable", "4.7-stable"]
     runs-on: ubuntu-latest
     env:
       GODOT_VERSION: ${{ matrix.godot_version }}
@@ -85,7 +77,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download headless Godot ${{ env.GODOT_VERSION }} (linux x86_64)
+      - name: Download Godot ${{ env.GODOT_VERSION }} (linux x86_64, full editor build)
         run: |
           curl -sL -o godot.zip \
             "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
@@ -96,58 +88,8 @@ jobs:
       - name: Sanity-check the downloaded Godot binary
         run: "$GODOT_PATH --version"
 
-      - name: Integration tests
-        run: npm run test:integration
-
-  integration-windows-smoke:
-    name: integration smoke (windows-latest, latest Godot)
-    runs-on: windows-latest
-    env:
-      # Keep in sync with the ubuntu matrix's ">= 4.4" leg above.
-      GODOT_VERSION: "4.7-stable"
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download headless Godot ${{ env.GODOT_VERSION }} (win64)
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/$env:GODOT_VERSION/Godot_v$($env:GODOT_VERSION)_win64.exe.zip" -OutFile godot.zip
-          Expand-Archive -Path godot.zip -DestinationPath godot-bin
-          $exePath = Join-Path (Resolve-Path godot-bin).Path "Godot_v$($env:GODOT_VERSION)_win64.exe"
-          echo "GODOT_PATH=$exePath" >> $env:GITHUB_ENV
-
-      - name: Sanity-check the downloaded Godot binary
-        shell: pwsh
-        run: '& "$env:GODOT_PATH" --version'
-
-      # Full suite (godot-prd.md §9) runs on ubuntu above; this job's job is
-      # Windows-specific real-filesystem semantics (godot-prd.md §7.1: case
-      # insensitivity, backslashes, drive letters, 8.3 short names, UNC
-      # paths), which unit-level tests already probe (test/unit/
-      # path-containment.test.ts's "Windows-specific cases") but only
-      # against Node's own path handling - not a real headless Godot
-      # subprocess writing/reading files on Windows. Rather than running
-      # the entire ~90-case integration suite here (real, but adds several
-      # minutes of Windows-runner time for coverage that's largely
-      # redundant with the ubuntu legs), this runs a deliberately reduced
-      # but still real slice, selected to cover exactly what's
-      # Windows/task-13-specific:
-      #   - gd-path-containment: the .gd defense-in-depth containment sweep
-      #     itself (this task's core deliverable) against real Windows
-      #     path semantics (backslashes, drive letters, UNC).
-      #   - create-scene: the basic write path (a real Godot subprocess
-      #     actually writing a .tscn to a real Windows filesystem path).
-      #   - version-gate: the minGodotVersion call-time gate, wired through
-      #     registerAll, against this leg's real (>= 4.4) Godot.
-      #   - readback: get_scene_tree/read_node_properties/list_resources,
-      #     closing the write -> verify loop on Windows.
-      - name: Integration smoke tests (reduced slice - see comment above for what runs and why)
-        run: npm run test:integration -- gd-path-containment create-scene version-gate readback
+      # The #64 feasibility spike, enforced forever after: a real editor
+      # process under a virtual display, the bundled addon, a WebSocket
+      # handshake, and tool calls through the bridge.
+      - name: Integration tests (real editor under xvfb)
+        run: xvfb-run --auto-servernum npm run test:integration

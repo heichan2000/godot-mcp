@@ -1,21 +1,18 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * Coverage gate scope (godot-prd.md §9 "Coverage gate on the pure layers"):
- * only the deterministic, no-process/no-Godot modules - the ones unit tests
- * can (and do) exercise exhaustively without a real subprocess or headless
- * Godot binary. Deliberately excludes everything under `tools/*.ts` and
- * `godot/{runner,cache,discovery,process,script-errors,version-gate}.ts` -
- * those are process/Godot-dependent and covered by the separate integration
- * suite (`npm run test:integration`), not this gate; folding them in here
- * would either demand mocking their way to a number or silently under-count
- * real coverage that only exists in the integration run.
+ * Coverage gate scope (PRD #63 §9 "Coverage gate on the pure layers"): only
+ * the deterministic modules unit tests can exercise exhaustively without a
+ * live editor or real socket. `src/bridge/connection.ts` is deliberately
+ * excluded - it is socket/timer-driven; it IS unit-tested (see
+ * test/unit/bridge-connection.test.ts) but not gate-scoped, since folding it
+ * in would either demand mocking its way to a number or silently under-count
+ * behavior that only a real WebSocket run exercises.
  *
- * `godot/paths.ts` and `registry.ts` DO touch the filesystem/an injectable
- * version gate respectively, but both are fully deterministic given their
- * injected seams (realpathSync, fileExists, a fake GodotVersionGate) and are
- * exhaustively unit-tested that way (see test/unit/path-containment.test.ts,
- * test/unit/registry.test.ts) - PRD §9 names both explicitly as in-scope.
+ * `godot/paths.ts` and `registry.ts` DO touch the filesystem/the MCP SDK
+ * respectively, but both are fully deterministic given their injected seams
+ * and are exhaustively unit-tested that way (see
+ * test/unit/path-containment.test.ts, test/unit/registry.test.ts).
  */
 const COVERAGE_INCLUDE = [
   "src/schemas.ts",
@@ -23,6 +20,7 @@ const COVERAGE_INCLUDE = [
   "src/godot/values.ts",
   "src/config.ts",
   "src/registry.ts",
+  "src/bridge/protocol.ts",
 ];
 
 // Unit tests only (no Godot required). Integration tests live under

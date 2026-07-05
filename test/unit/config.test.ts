@@ -53,4 +53,18 @@ describe("loadConfig", () => {
       expect(config.outputBufferLines).toBe(1000);
     },
   );
+
+  it("defaults bridgePort to 6510 and honors GODOT_MCP_PORT", () => {
+    expect(loadConfig({}).bridgePort).toBe(6510);
+    expect(loadConfig({ GODOT_MCP_PORT: "7000" }).bridgePort).toBe(7000);
+    expect(loadConfig({ GODOT_MCP_PORT: "0" }).bridgePort).toBe(6510);
+    expect(loadConfig({ GODOT_MCP_PORT: "not-a-port" }).bridgePort).toBe(6510);
+    expect(loadConfig({ GODOT_MCP_PORT: "70000" }).bridgePort).toBe(6510);
+  });
+
+  it("defaults bridgeTimeoutMs to 30000 and honors BRIDGE_TIMEOUT_MS", () => {
+    expect(loadConfig({}).bridgeTimeoutMs).toBe(30_000);
+    expect(loadConfig({ BRIDGE_TIMEOUT_MS: "5000" }).bridgeTimeoutMs).toBe(5_000);
+    expect(loadConfig({ BRIDGE_TIMEOUT_MS: "-1" }).bridgeTimeoutMs).toBe(30_000);
+  });
 });

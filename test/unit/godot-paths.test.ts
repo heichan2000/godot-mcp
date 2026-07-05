@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectGodotPath, getCandidatePaths } from "../../src/godot/paths.js";
+import { detectGodotPath, getCandidatePaths, godotNotFoundError } from "../../src/godot/paths.js";
 
 describe("getCandidatePaths", () => {
   it("returns a non-empty, de-duplicated list of platform-specific candidates for win32", () => {
@@ -89,5 +89,17 @@ describe("detectGodotPath", () => {
     });
 
     expect(result.found).toBe(false);
+  });
+});
+
+describe("godotNotFoundError", () => {
+  it("produces a guided error result listing every tried candidate", () => {
+    const response = godotNotFoundError(["C:\\a\\Godot.exe", "C:\\b\\Godot.exe"]);
+
+    expect(response.isError).toBe(true);
+    const text = response.content.map((item) => item.text).join("\n");
+    expect(text).toContain("Could not locate a Godot executable.");
+    expect(text).toContain("C:\\a\\Godot.exe, C:\\b\\Godot.exe");
+    expect(text).toContain("GODOT_PATH");
   });
 });
