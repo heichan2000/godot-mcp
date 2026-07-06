@@ -18,7 +18,11 @@ export interface BridgeStatus {
   protocolVersion: number;
   pendingRequests: number;
   lastDisconnectReason?: string;
-  /** Consecutive failed connection attempts since the last successful handshake. */
+  /**
+   * Reconnects scheduled since the last successful handshake. Climbs on every
+   * connect/close cycle - including a repeating protocol mismatch - and resets
+   * to 0 only when a hello is accepted. Diagnostic only.
+   */
   reconnectAttempts: number;
   /** Set while state === "mismatch": both protocol versions, for diagnostics. */
   mismatch?: ProtocolMismatch;
