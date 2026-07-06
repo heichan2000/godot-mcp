@@ -29,7 +29,12 @@ describe("server wiring", () => {
 
   it("builds the walking-skeleton inventory", () => {
     const names = buildToolInventory({ bridge: stubBridge }).map((tool) => tool.name);
-    expect(names).toEqual(["bridge_status", "get_godot_version", "get_bridge_log"]);
+    expect(names).toEqual([
+      "bridge_status",
+      "get_godot_version",
+      "get_bridge_log",
+      "create_project",
+    ]);
   });
 
   it("createServer registers without touching the bridge", () => {

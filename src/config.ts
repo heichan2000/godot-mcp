@@ -10,7 +10,7 @@ export const DEFAULT_BRIDGE_PORT = 6510;
 export const DEFAULT_BRIDGE_TIMEOUT_MS = 30_000;
 
 const ConfigSchema = z.object({
-  /** Explicit path to the Godot executable, as configured by the user. Consumed by create_project scaffolding (#66). */
+  /** Explicit path to the Godot executable, as configured by the user. Reserved for future tools; scaffolding (create_project) writes files only and never execs Godot (REQ-A-01). */
   godotPath: z.string().min(1).optional(),
   /** Enables verbose stderr diagnostics. Never affects stdout. */
   debug: z.boolean(),

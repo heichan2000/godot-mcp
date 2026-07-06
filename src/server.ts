@@ -7,6 +7,7 @@ import { BridgeConnection } from "./bridge/connection.js";
 import { loadConfig } from "./config.js";
 import { registerAll, type ToolDescriptor } from "./registry.js";
 import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
+import { createOnboardingTools } from "./tools/onboarding.js";
 
 const SERVER_NAME = "godot-mcp";
 /** Kept in lockstep with package.json - asserted by test/unit/server.test.ts. */
@@ -22,7 +23,13 @@ export interface ServerDeps {
  * code-exec audit (#76) can walk exactly what ships, with a stub bridge.
  */
 export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
-  return [...createBridgeTools({ bridge: deps.bridge, serverVersion: SERVER_VERSION })];
+  return [
+    ...createBridgeTools({ bridge: deps.bridge, serverVersion: SERVER_VERSION }),
+    ...createOnboardingTools({
+      serverVersion: SERVER_VERSION,
+      bundledAddonDir: resolveBundledAddonDir(),
+    }),
+  ];
 }
 
 /** Builds the MCP server and registers every tool. Pure wiring; never touches the network itself. */
