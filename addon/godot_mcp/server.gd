@@ -20,14 +20,25 @@ var _start_ms := 0
 
 func _ready() -> void:
 	_start_ms = Time.get_ticks_msec()
-	var port := DEFAULT_PORT
-	if ProjectSettings.has_setting(PORT_SETTING):
-		port = int(ProjectSettings.get_setting(PORT_SETTING))
+	var port := _configured_port()
 	var err := _tcp.listen(port, "127.0.0.1")
 	if err != OK:
 		push_error("[godot-mcp] Failed to listen on 127.0.0.1:%d (error %d). Is another editor already bridging this port?" % [port, err])
 		return
 	print("[godot-mcp] Bridge listening on ws://127.0.0.1:%d" % port)
+
+
+## Reads godot_mcp/network/port, falling back to DEFAULT_PORT on out-of-range
+## or non-numeric values (mirrors the TS side's lenient readBridgePort).
+func _configured_port() -> int:
+	if not ProjectSettings.has_setting(PORT_SETTING):
+		return DEFAULT_PORT
+	var raw: Variant = ProjectSettings.get_setting(PORT_SETTING)
+	var port := int(raw)
+	if port < 1 or port > 65535:
+		push_warning("[godot-mcp] Ignoring invalid %s value %s; using default port %d." % [PORT_SETTING, str(raw), DEFAULT_PORT])
+		return DEFAULT_PORT
+	return port
 
 
 func _exit_tree() -> void:
@@ -59,11 +70,17 @@ func _accept_pending() -> void:
 		var conn := _tcp.take_connection()
 		if conn == null:
 			continue
-		if _peer != null and _peer.get_ready_state() != WebSocketPeer.STATE_CLOSED:
-			# Single-client policy (PRD #63 §7): drop the extra connection.
-			push_warning("[godot-mcp] Refused a second concurrent bridge client.")
-			conn.disconnect_from_host()
-			continue
+		if _peer != null:
+			if _peer.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+				# Single-client policy (PRD #63 §7): drop the extra connection.
+				push_warning("[godot-mcp] Refused a second concurrent bridge client.")
+				conn.disconnect_from_host()
+				continue
+			# The old peer closed this frame, before _process's STATE_CLOSED
+			# branch ran: drop its queued ops so the new client never executes
+			# a dead client's requests (REQ-A-12 hazard once ops mutate).
+			print("[godot-mcp] Bridge client disconnected (replaced by a new connection).")
+			_reset_peer()
 		var ws := WebSocketPeer.new()
 		var err := ws.accept_stream(conn)
 		if err != OK:
