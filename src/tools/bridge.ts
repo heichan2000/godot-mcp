@@ -1,8 +1,10 @@
+import { z } from "zod";
 import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgeStatus } from "../bridge/connection.js";
 import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../bridge/connection.js";
 import type { TrafficEntry } from "../bridge/traffic-log.js";
+import { TRAFFIC_LOG_CAPACITY } from "../bridge/traffic-log.js";
 import { SystemStatusSchema, type SystemStatus } from "../bridge/protocol.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
@@ -161,5 +163,25 @@ export function createBridgeTools(deps: BridgeToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [bridgeStatus, getGodotVersion];
+  const getBridgeLog: ToolDescriptor = {
+    name: "get_bridge_log",
+    description:
+      "Return recent bridge traffic (frames and connection events) for diagnosing editor-bridge issues.",
+    inputSchema: {
+      lines: z
+        .number()
+        .int()
+        .min(1)
+        .max(TRAFFIC_LOG_CAPACITY)
+        .optional()
+        .describe(`How many recent entries to return (default 50, max ${TRAFFIC_LOG_CAPACITY}).`),
+    },
+    handler: async (args) => {
+      const lines = (args as { lines?: number }).lines;
+      const entries = deps.bridge.traffic(lines ?? 50);
+      return successResult("Bridge log", { entries, count: entries.length });
+    },
+  };
+
+  return [bridgeStatus, getGodotVersion, getBridgeLog];
 }
