@@ -20,6 +20,8 @@ export interface BridgeStatus {
   lastDisconnectReason?: string;
   /** Consecutive failed connection attempts since the last successful handshake. */
   reconnectAttempts: number;
+  /** Set while state === "mismatch": both protocol versions, for diagnostics. */
+  mismatch?: ProtocolMismatch;
 }
 
 export interface ProtocolMismatch {
@@ -148,6 +150,7 @@ export class BridgeConnection {
       pendingRequests: this.pending.size,
       lastDisconnectReason: this.lastDisconnectReason,
       reconnectAttempts: this.reconnectAttempts,
+      mismatch: this.mismatch,
     };
   }
 

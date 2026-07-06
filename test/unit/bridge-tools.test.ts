@@ -128,3 +128,58 @@ describe("bridge_status", () => {
     expect(guidance.join(" ")).toContain("@cradial/godot-mcp@1.x");
   });
 });
+
+describe("bridge_status hardening (#65)", () => {
+  it("reports the addon's protocol version in mismatch state (not null)", async () => {
+    const bridge = await connectedBridge({ protocolVersion: 99 });
+    const result = await call(bridge, "bridge_status");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      state: "mismatch",
+      addon_protocol_version: 99,
+    });
+  });
+
+  it("includes pending_requests in the disconnected payload", async () => {
+    const bridge = new BridgeConnection({
+      url: "ws://127.0.0.1:1",
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 100,
+      reconnectDelayMs: 5_000,
+    });
+    cleanups.push(() => bridge.stop());
+    const result = await call(bridge, "bridge_status");
+    expect(result.structuredContent).toMatchObject({ pending_requests: 0 });
+  });
+
+  it("returns a structured error when the addon sends a malformed system/status", async () => {
+    const bridge = await connectedBridge({
+      handlers: { "system/status": () => ({ nonsense: true }) },
+    });
+    const result = await call(bridge, "bridge_status");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("system/status");
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.length).toBeGreaterThan(0);
+  });
+
+  it("not-connected guidance covers setup steps and the 1.x pointer (REQ-A-10)", async () => {
+    const bridge = new BridgeConnection({
+      url: "ws://127.0.0.1:1",
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 100,
+      reconnectDelayMs: 5_000,
+    });
+    cleanups.push(() => bridge.stop());
+    const result = await call(bridge, "get_godot_version");
+    expect(result.isError).toBe(true);
+    const joined = (
+      result.structuredContent as { possibleSolutions: string[] }
+    ).possibleSolutions.join(" ");
+    expect(joined).toContain("Godot editor"); // open the editor
+    expect(joined).toContain("addons/"); // install the addon
+    expect(joined).toContain("bridge_status"); // diagnose
+    expect(joined).toContain("@cradial/godot-mcp@1.x"); // headless pointer
+  });
+});

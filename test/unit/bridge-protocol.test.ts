@@ -4,6 +4,7 @@ import {
   encodeRequest,
   helloAck,
   parseAddonFrame,
+  SystemStatusSchema,
 } from "../../src/bridge/protocol.js";
 
 const validHello = {
@@ -97,5 +98,28 @@ describe("encodeRequest / helloAck", () => {
       server_version: "2.0.0-alpha.0",
       protocol_version: PROTOCOL_VERSION,
     });
+  });
+});
+
+describe("SystemStatusSchema", () => {
+  const valid = {
+    protocol_version: 1,
+    addon_version: "2.0.0-alpha.0",
+    godot_version: { major: 4, minor: 7, patch: 1, status: "stable" },
+    godot_version_string: "4.7.1.stable",
+    features: { dotnet: false },
+    project_path: "/tmp/p",
+    uptime_ms: 12,
+    queue_depth: 0,
+  };
+
+  it("accepts a valid payload and passes unknown future fields through", () => {
+    const parsed = SystemStatusSchema.safeParse({ ...valid, future_field: "kept" });
+    expect(parsed.success).toBe(true);
+    expect((parsed.data as Record<string, unknown>).future_field).toBe("kept");
+  });
+
+  it("rejects a payload missing required fields", () => {
+    expect(SystemStatusSchema.safeParse({ uptime_ms: 5 }).success).toBe(false);
   });
 });

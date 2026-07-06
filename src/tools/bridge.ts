@@ -3,6 +3,7 @@ import type { ToolDescriptor } from "../registry.js";
 import type { BridgeStatus } from "../bridge/connection.js";
 import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../bridge/connection.js";
 import type { TrafficEntry } from "../bridge/traffic-log.js";
+import { SystemStatusSchema, type SystemStatus } from "../bridge/protocol.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
 export interface BridgePort {
@@ -64,23 +65,31 @@ export function bridgeErrorToResponse(error: unknown) {
   throw error;
 }
 
-interface SystemStatusResult {
-  [key: string]: unknown;
-  protocol_version: number;
-  addon_version: string;
-  godot_version: Record<string, unknown>;
-  godot_version_string: string;
-  features: Record<string, boolean>;
-  project_path: string;
-  uptime_ms: number;
-  queue_depth: number;
-}
-
 function successResult(label: string, payload: Record<string, unknown>) {
   return {
     content: [{ type: "text" as const, text: `${label}: ${JSON.stringify(payload)}` }],
     structuredContent: payload,
   };
+}
+
+/**
+ * Runs system/status and validates the payload (REQ-A-08: a stale addon's
+ * malformed reply becomes a guided error, not undefined tool output).
+ */
+async function fetchSystemStatus(bridge: BridgePort): Promise<SystemStatus> {
+  const raw = await bridge.request("system/status");
+  const parsed = SystemStatusSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new BridgeOpError(
+      "The addon returned a malformed system/status payload.",
+      "malformed_payload",
+      [
+        "Update the Godot MCP addon in this project to the version bundled with this server.",
+        "Compare addon_version and server_version via bridge_status, then restart the editor.",
+      ],
+    );
+  }
+  return parsed.data;
 }
 
 /**
@@ -96,7 +105,7 @@ export function createBridgeTools(deps: BridgeToolsDeps): ToolDescriptor[] {
     inputSchema: {},
     handler: async () => {
       try {
-        const live = (await deps.bridge.request("system/status")) as SystemStatusResult;
+        const live = await fetchSystemStatus(deps.bridge);
         return successResult("Godot version", {
           godot_version: live.godot_version,
           godot_version_string: live.godot_version_string,
@@ -123,13 +132,16 @@ export function createBridgeTools(deps: BridgeToolsDeps): ToolDescriptor[] {
           state: status.state,
           server_version: deps.serverVersion,
           protocol_version: status.protocolVersion,
+          pending_requests: status.pendingRequests,
+          reconnect_attempts: status.reconnectAttempts,
           last_disconnect_reason: status.lastDisconnectReason ?? null,
-          addon_protocol_version: status.hello?.protocol_version ?? null,
+          addon_protocol_version:
+            status.mismatch?.addonProtocolVersion ?? status.hello?.protocol_version ?? null,
           guidance: EDITOR_NOT_CONNECTED_SOLUTIONS,
         });
       }
       try {
-        const live = (await deps.bridge.request("system/status")) as SystemStatusResult;
+        const live = await fetchSystemStatus(deps.bridge);
         return successResult("Bridge status", {
           state: "connected",
           server_version: deps.serverVersion,
