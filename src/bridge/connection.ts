@@ -18,6 +18,8 @@ export interface BridgeStatus {
   protocolVersion: number;
   pendingRequests: number;
   lastDisconnectReason?: string;
+  /** Consecutive failed connection attempts since the last successful handshake. */
+  reconnectAttempts: number;
 }
 
 export interface ProtocolMismatch {
@@ -69,6 +71,8 @@ export interface BridgeConnectionOptions {
   requestTimeoutMs: number;
   /** Delay between reconnect attempts. Default 1000ms; tests use ~50ms. */
   reconnectDelayMs?: number;
+  /** Backoff cap for repeated failed reconnects. Default 10000ms. */
+  maxReconnectDelayMs?: number;
   /** DEBUG-gated stderr logger; never stdout (REQ-A-09). */
   log?: (message: string) => void;
 }
@@ -77,6 +81,15 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: NodeJS.Timeout;
+}
+
+/**
+ * Capped exponential backoff for reconnect attempts (REQ-A-04): base, 2x,
+ * 4x ... capped at maxMs. Exponent is clamped so large attempt counts cannot
+ * overflow to Infinity.
+ */
+export function reconnectBackoffMs(attempt: number, baseMs: number, maxMs: number): number {
+  return Math.min(baseMs * 2 ** Math.min(attempt, 20), maxMs);
 }
 
 /**
@@ -97,6 +110,7 @@ export class BridgeConnection {
   private mismatch: ProtocolMismatch | undefined;
   private lastDisconnectReason: string | undefined;
   private nextId = 1;
+  private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private handshakeTimer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -133,6 +147,7 @@ export class BridgeConnection {
       protocolVersion: PROTOCOL_VERSION,
       pendingRequests: this.pending.size,
       lastDisconnectReason: this.lastDisconnectReason,
+      reconnectAttempts: this.reconnectAttempts,
     };
   }
 
@@ -269,6 +284,7 @@ export class BridgeConnection {
       this.clearHandshakeTimer();
       this.hello = frame.hello;
       this.mismatch = undefined;
+      this.reconnectAttempts = 0;
       const ack = helloAck(this.options.serverVersion);
       this.trafficLog.record("sent", ack);
       this.socket?.send(ack);
@@ -312,10 +328,16 @@ export class BridgeConnection {
 
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer !== null) return;
+    const delayMs = reconnectBackoffMs(
+      this.reconnectAttempts,
+      this.options.reconnectDelayMs ?? 1_000,
+      this.options.maxReconnectDelayMs ?? 10_000,
+    );
+    this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, this.options.reconnectDelayMs ?? 1_000);
+    }, delayMs);
   }
 
   private rejectAllPending(reason: string): void {

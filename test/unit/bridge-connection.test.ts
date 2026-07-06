@@ -5,6 +5,7 @@ import {
   BridgeOpError,
   BridgeTimeoutError,
   BridgeUnavailableError,
+  reconnectBackoffMs,
 } from "../../src/bridge/connection.js";
 import { FakeAddonPeer } from "../support/fake-addon-peer.js";
 
@@ -151,5 +152,28 @@ describe("BridgeConnection", () => {
     expect(texts).toContain("system/status"); // the request frame
     expect(texts).toContain("state -> connected"); // the lifecycle event
     expect(texts).toContain('"type":"hello"'); // the received hello
+  });
+
+  it("backs off between reconnect attempts and resets the counter once connected", async () => {
+    const port = (await startPeer({})).port; // grab a real free port...
+    await cleanups.pop()!(); // ...then close the peer so nothing listens on it
+    const bridge = startConnection(`ws://127.0.0.1:${port}`);
+    // With base 50ms the first retries are fast; the counter must climb.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(bridge.status().reconnectAttempts).toBeGreaterThanOrEqual(2);
+    await startPeer({ port });
+    await bridge.waitForState("connected", 10_000);
+    expect(bridge.status().reconnectAttempts).toBe(0);
+  });
+});
+
+describe("reconnectBackoffMs", () => {
+  it("doubles from the base and caps at max", () => {
+    expect(reconnectBackoffMs(0, 1_000, 10_000)).toBe(1_000);
+    expect(reconnectBackoffMs(1, 1_000, 10_000)).toBe(2_000);
+    expect(reconnectBackoffMs(2, 1_000, 10_000)).toBe(4_000);
+    expect(reconnectBackoffMs(3, 1_000, 10_000)).toBe(8_000);
+    expect(reconnectBackoffMs(4, 1_000, 10_000)).toBe(10_000);
+    expect(reconnectBackoffMs(50, 1_000, 10_000)).toBe(10_000); // no overflow at large attempts
   });
 });

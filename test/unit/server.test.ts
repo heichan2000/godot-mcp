@@ -14,6 +14,7 @@ const stubBridge: BridgePort = {
     serverVersion: SERVER_VERSION,
     protocolVersion: 1,
     pendingRequests: 0,
+    reconnectAttempts: 0,
   }),
   request: async () => {
     throw new Error("stub bridge has no editor");
