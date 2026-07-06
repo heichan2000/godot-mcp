@@ -135,6 +135,13 @@ const ListResourcesSchema = z
   })
   .catchall(z.unknown());
 
+const ImportResultSchema = z
+  .object({
+    scan_started: z.boolean(),
+    reimported: z.array(z.string()),
+  })
+  .catchall(z.unknown());
+
 export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
   const listProjects: ToolDescriptor = {
     name: "list_projects",
@@ -243,5 +250,35 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [listProjects, getProjectInfo, listResources];
+  const importAssets: ToolDescriptor = {
+    name: "import_assets",
+    description:
+      "Trigger the editor's filesystem scan and (re)import of new or changed assets so they become usable res:// resources.",
+    inputSchema: {
+      paths: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "Specific res:// files to (re)import; omit to rescan the whole project for changes.",
+        ),
+    },
+    handler: async (args) => {
+      const { paths } = args as { paths?: string[] };
+      const params: Record<string, unknown> = {};
+      if (paths !== undefined) params.paths = paths;
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "assets/import",
+          params,
+          ImportResultSchema,
+        );
+        return successResult("Import assets", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [listProjects, getProjectInfo, listResources, importAssets];
 }

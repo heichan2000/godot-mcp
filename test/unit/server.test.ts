@@ -38,6 +38,7 @@ describe("server wiring", () => {
       "list_projects",
       "get_project_info",
       "list_resources",
+      "import_assets",
     ]);
   });
 

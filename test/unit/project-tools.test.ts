@@ -243,3 +243,38 @@ describe("list_resources", () => {
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
   });
 });
+
+describe("import_assets", () => {
+  it("forwards named paths and returns the reimported list", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "assets/import": (params) => {
+        seen = params;
+        return { scan_started: false, reimported: ["res://dropped.png"] };
+      },
+    });
+    const result = await callBridge(bridge, "import_assets", { paths: ["res://dropped.png"] });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ paths: ["res://dropped.png"] });
+    expect(result.structuredContent).toMatchObject({
+      scan_started: false,
+      reimported: ["res://dropped.png"],
+    });
+  });
+
+  it("triggers a whole-project scan when no paths are given", async () => {
+    const bridge = await connectedBridge({
+      "assets/import": () => ({ scan_started: true, reimported: [] }),
+    });
+    const result = await callBridge(bridge, "import_assets");
+    expect(result.structuredContent).toMatchObject({ scan_started: true, reimported: [] });
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callBridge(deadBridge(), "import_assets");
+    expect(result.isError).toBe(true);
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+});

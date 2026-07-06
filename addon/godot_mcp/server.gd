@@ -142,6 +142,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return {"result": _op_project_info()}
 		"project/list_resources":
 			return {"result": _op_list_resources(params)}
+		"assets/import":
+			return {"result": _op_import_assets(params)}
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -290,6 +292,31 @@ func _collect_resources(dir: EditorFileSystemDirectory, filter_type: String, fil
 func _under_dir(res_path: String, prefix: String) -> bool:
 	var normalized := prefix.trim_suffix("/")
 	return res_path == normalized or res_path.begins_with(normalized + "/")
+
+
+## Editor-native scan/reimport (REQ-J-01) — the successor to headless --import.
+## With explicit `paths`: register each file with the resource filesystem
+## (update_file) then reimport them synchronously, so a just-dropped file is a
+## usable res:// resource on return. With no paths: kick off an async
+## whole-project rescan (progress frames arrive in a later slice, #75). The
+## PRODUCT never spawns Godot (REQ-A-01) — this runs inside the live editor.
+func _op_import_assets(params: Dictionary) -> Dictionary:
+	var fs := EditorInterface.get_resource_filesystem()
+	var raw: Variant = params.get("paths", [])
+	var paths := PackedStringArray()
+	if raw is Array:
+		for entry in raw:
+			paths.append(str(entry))
+	if paths.is_empty():
+		fs.scan()
+		return {"scan_started": true, "reimported": []}
+	for res_path in paths:
+		fs.update_file(res_path)
+	fs.reimport_files(paths)
+	var reimported: Array = []
+	for res_path in paths:
+		reimported.append(res_path)
+	return {"scan_started": false, "reimported": reimported}
 
 
 func _addon_version() -> String:
