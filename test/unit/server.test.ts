@@ -35,6 +35,7 @@ describe("server wiring", () => {
       "get_bridge_log",
       "create_project",
       "install_addon",
+      "list_projects",
     ]);
   });
 
