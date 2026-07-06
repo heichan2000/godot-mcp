@@ -34,6 +34,7 @@ describe("server wiring", () => {
       "get_godot_version",
       "get_bridge_log",
       "create_project",
+      "install_addon",
     ]);
   });
 

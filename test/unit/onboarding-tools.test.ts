@@ -96,3 +96,89 @@ describe("create_project", () => {
     expect(result.content[0]!.text.toLowerCase()).toContain("absolute");
   });
 });
+
+/** Builds a fake bundled-addon source dir with a plugin.cfg carrying `version`. */
+function fakeBundledAddon(version: string): string {
+  const dir = tempDir();
+  writeFileSync(
+    path.join(dir, "plugin.cfg"),
+    `[plugin]\nname="Godot MCP"\nversion="${version}"\nscript="plugin.gd"\n`,
+    "utf8",
+  );
+  writeFileSync(path.join(dir, "plugin.gd"), "@tool\nextends EditorPlugin\n", "utf8");
+  return dir;
+}
+
+/** A minimal existing Godot project directory (has project.godot). */
+function fakeProject(): string {
+  const dir = tempDir();
+  writeFileSync(path.join(dir, "project.godot"), "config_version=5\n", "utf8");
+  return dir;
+}
+
+async function callInstall(
+  bundledAddonDir: string,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const tools = createOnboardingTools({ serverVersion: SERVER_VERSION, bundledAddonDir });
+  const found = tools.find((candidate) => candidate.name === "install_addon");
+  if (!found) throw new Error("tool not registered: install_addon");
+  return (await found.handler(args, {} as never)) as ToolResult;
+}
+
+describe("install_addon", () => {
+  it("installs the addon into a project and reports enable steps", async () => {
+    const bundled = fakeBundledAddon(SERVER_VERSION);
+    const projectDir = fakeProject();
+    const result = await callInstall(bundled, { project_path: projectDir });
+
+    expect(result.isError).toBeUndefined();
+    expect(existsSync(path.join(projectDir, "addons", "godot_mcp", "plugin.cfg"))).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      action: "installed",
+      installed_version: SERVER_VERSION,
+      previous_version: null,
+      addon_path: "res://addons/godot_mcp",
+    });
+    const steps = (result.structuredContent as { enable_steps: string[] }).enable_steps;
+    expect(steps.join(" ")).toContain("Plugins");
+  });
+
+  it("updates an already-installed addon and reports the previous version", async () => {
+    const projectDir = fakeProject();
+    await callInstall(fakeBundledAddon("2.0.0-alpha.0"), { project_path: projectDir });
+    const result = await callInstall(fakeBundledAddon("2.0.0-alpha.1"), {
+      project_path: projectDir,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      action: "updated",
+      installed_version: "2.0.0-alpha.1",
+      previous_version: "2.0.0-alpha.0",
+    });
+    const cfg = readFileSync(path.join(projectDir, "addons", "godot_mcp", "plugin.cfg"), "utf8");
+    expect(cfg).toContain('version="2.0.0-alpha.1"');
+  });
+
+  it("rejects a folder that is not a Godot project", async () => {
+    const notAProject = tempDir();
+    const result = await callInstall(fakeBundledAddon(SERVER_VERSION), {
+      project_path: notAProject,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("project.godot");
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.join(" ")).toContain("create_project");
+    expect(result.content[0]!.text).not.toContain("@cradial/godot-mcp@1.x");
+  });
+
+  it("rejects a relative project_path", async () => {
+    const result = await callInstall(fakeBundledAddon(SERVER_VERSION), {
+      project_path: "rel/proj",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("absolute");
+  });
+});

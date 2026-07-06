@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createErrorResponse, type ErrorResponse } from "../errors.js";
@@ -90,10 +98,13 @@ function checkEmptyTarget(projectRoot: string): ErrorResponse | null {
   return null;
 }
 
-// `deps` (serverVersion / bundledAddonDir) is unused by create_project alone;
-// Task 2 appends install_addon to this file and consumes it there. Prefixed
-// per this repo's eslint no-unused-vars argsIgnorePattern until then.
-export function createOnboardingTools(_deps: OnboardingToolsDeps): ToolDescriptor[] {
+/** Reads `version="..."` out of a plugin.cfg, or null when the file is absent. */
+function readPluginVersion(pluginCfgPath: string): string | null {
+  if (!existsSync(pluginCfgPath)) return null;
+  return /version="([^"]+)"/.exec(readFileSync(pluginCfgPath, "utf8"))?.[1] ?? null;
+}
+
+export function createOnboardingTools(deps: OnboardingToolsDeps): ToolDescriptor[] {
   const createProject: ToolDescriptor = {
     name: "create_project",
     description:
@@ -178,5 +189,72 @@ export function createOnboardingTools(_deps: OnboardingToolsDeps): ToolDescripto
     },
   };
 
-  return [createProject];
+  const installAddon: ToolDescriptor = {
+    name: "install_addon",
+    description:
+      "Install or update the Godot MCP bridge addon into an existing project, then report the enable steps.",
+    inputSchema: {
+      project_path: z
+        .string()
+        .min(1, "project_path must not be empty.")
+        .describe(
+          "Absolute path to an existing Godot project directory (containing project.godot).",
+        ),
+    },
+    handler: async (args) => {
+      const { project_path } = args as { project_path: string };
+
+      if (!path.isAbsolute(project_path)) {
+        return createErrorResponse({
+          message: `project_path "${project_path}" must be an absolute path.`,
+          possibleSolutions: [
+            "Pass the absolute path to the project folder that contains project.godot.",
+          ],
+        });
+      }
+
+      const projectRoot = path.resolve(project_path);
+      if (!existsSync(path.join(projectRoot, "project.godot"))) {
+        return createErrorResponse({
+          message: `No project.godot found in "${projectRoot}"; it is not a Godot project.`,
+          possibleSolutions: [
+            "Pass the folder that directly contains project.godot.",
+            "Starting from an empty folder? Run create_project first, then install_addon.",
+          ],
+        });
+      }
+
+      let destination: string;
+      try {
+        destination = assertInsideRoot(projectRoot, path.join("addons", "godot_mcp"));
+      } catch (error) {
+        if (error instanceof PathContainmentError) return pathContainmentErrorResponse(error);
+        throw error;
+      }
+
+      const previousVersion = readPluginVersion(path.join(destination, "plugin.cfg"));
+      mkdirSync(path.dirname(destination), { recursive: true });
+      cpSync(deps.bundledAddonDir, destination, { recursive: true });
+      const installedVersion =
+        readPluginVersion(path.join(deps.bundledAddonDir, "plugin.cfg")) ?? deps.serverVersion;
+
+      return successResult(
+        previousVersion ? "Updated Godot MCP addon" : "Installed Godot MCP addon",
+        {
+          project_path: projectRoot,
+          action: previousVersion ? "updated" : "installed",
+          installed_version: installedVersion,
+          previous_version: previousVersion,
+          addon_path: "res://addons/godot_mcp",
+          enable_steps: [
+            "Open the project in the Godot editor (or restart it if already open).",
+            "Enable 'Godot MCP' under Project > Project Settings > Plugins.",
+            "The bridge starts automatically once enabled; confirm with bridge_status.",
+          ],
+        },
+      );
+    },
+  };
+
+  return [createProject, installAddon];
 }
