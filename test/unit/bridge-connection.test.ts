@@ -165,6 +165,57 @@ describe("BridgeConnection", () => {
     await bridge.waitForState("connected", 10_000);
     expect(bridge.status().reconnectAttempts).toBe(0);
   });
+
+  it("executes a parallel burst serially in arrival order (REQ-A-12, staged on the fake peer)", async () => {
+    const completed: number[] = [];
+    const peer = await startPeer({
+      handlers: {
+        "test/op": async (params) => {
+          const n = params.n as number;
+          // Earlier-arriving ops sleep LONGER - only a serial queue preserves arrival order.
+          await new Promise((resolve) => setTimeout(resolve, (5 - n) * 15));
+          completed.push(n);
+          return { n };
+        },
+      },
+    });
+    const bridge = startConnection(peer.url);
+    await bridge.waitForState("connected", 5_000);
+    const results = await Promise.all([0, 1, 2, 3, 4].map((n) => bridge.request("test/op", { n })));
+    expect(peer.requests.map((request) => request.params.n)).toEqual([0, 1, 2, 3, 4]);
+    expect(completed).toEqual([0, 1, 2, 3, 4]);
+    expect(results.map((result) => (result as { n: number }).n)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("maps a throwing fake-peer handler to an error frame instead of a hang", async () => {
+    const peer = await startPeer({
+      handlers: {
+        "boom/op": () => {
+          throw new Error("handler exploded");
+        },
+      },
+    });
+    const bridge = startConnection(peer.url, { requestTimeoutMs: 2_000 });
+    await bridge.waitForState("connected", 5_000);
+    const failure = bridge.request("boom/op");
+    await expect(failure).rejects.toBeInstanceOf(BridgeOpError);
+    await failure.catch((error: BridgeOpError) => {
+      expect(error.code).toBe("fake_peer_handler_error");
+      expect(error.message).toContain("handler exploded");
+    });
+  });
+
+  it("refuses a second concurrent client with close code 1013", async () => {
+    const peer = await startPeer();
+    const bridge = startConnection(peer.url);
+    await bridge.waitForState("connected", 5_000);
+    const { default: WebSocket } = await import("ws");
+    const second = new WebSocket(peer.url);
+    const closeCode = await new Promise<number>((resolve) => {
+      second.on("close", (code) => resolve(code));
+    });
+    expect(closeCode).toBe(1013);
+  });
 });
 
 describe("reconnectBackoffMs", () => {
