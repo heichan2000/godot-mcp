@@ -1,14 +1,21 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOnboardingTools } from "../../src/tools/onboarding.js";
 import { SERVER_VERSION, resolveBundledAddonDir } from "../../src/server.js";
+import { BridgeConnection } from "../../src/bridge/connection.js";
 import {
+  enablePlugin,
   godotMinorTag,
   hasGodot,
+  importPass,
   importProjectCaptured,
+  launchEditor,
+  pickFreePort,
   probeGodotVersionString,
+  setBridgePort,
+  type EditorHandle,
 } from "./support.js";
 
 function onboardingTool(name: string) {
@@ -43,4 +50,70 @@ describe.runIf(hasGodot)("create_project scaffold imports clean (REQ-B-01)", () 
       rmSync(workspace, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+describe.runIf(hasGodot)("onboarding tracer (empty folder -> connected session, REQ-A-03)", () => {
+  let workspace: string;
+  let projectDir: string;
+  let editor: EditorHandle;
+  let bridge: BridgeConnection;
+
+  beforeAll(async () => {
+    workspace = mkdtempSync(path.join(tmpdir(), "godot-mcp-onboarding-"));
+    projectDir = path.join(workspace, "game");
+
+    // 1. Scaffold into the empty folder, tagged for the running editor's minor.
+    const minor = godotMinorTag(await probeGodotVersionString());
+    const scaffold = (await onboardingTool("create_project").handler(
+      { project_path: projectDir, project_name: "Onboarding Tracer", godot_version: minor },
+      {} as never,
+    )) as { isError?: boolean };
+    expect(scaffold.isError).toBeFalsy();
+
+    // 2. Install the bundled addon (the single install call).
+    const install = (await onboardingTool("install_addon").handler(
+      { project_path: projectDir },
+      {} as never,
+    )) as { isError?: boolean; structuredContent?: Record<string, unknown> };
+    expect(install.isError).toBeFalsy();
+    expect(install.structuredContent!.action).toBe("installed");
+    expect(existsSync(path.join(projectDir, "addons", "godot_mcp", "plugin.cfg"))).toBe(true);
+
+    // 3. The one documented manual step: enable the plugin.
+    enablePlugin(projectDir);
+
+    // 4. Point the addon at a free port, warm the import cache, boot the editor.
+    const port = await pickFreePort();
+    setBridgePort(projectDir, port);
+    await importPass(projectDir);
+    editor = launchEditor(projectDir);
+
+    // 5. Connect the server-side bridge client and wait for the handshake.
+    bridge = new BridgeConnection({
+      url: `ws://127.0.0.1:${port}`,
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 30_000,
+      reconnectDelayMs: 500,
+      log: (message) => {
+        if (process.env.DEBUG) console.error(message);
+      },
+    });
+    bridge.start();
+    await bridge.waitForState("connected", 150_000);
+  }, 240_000);
+
+  afterAll(async () => {
+    await bridge?.stop();
+    await editor?.kill();
+    if (workspace) rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("reports a connected session running the bundled addon version", async () => {
+    const status = bridge.status();
+    expect(status.state).toBe("connected");
+    expect(status.hello?.addon_version).toBe(SERVER_VERSION);
+
+    const live = (await bridge.request("system/status")) as { addon_version: string };
+    expect(live.addon_version).toBe(SERVER_VERSION);
+  });
 });
