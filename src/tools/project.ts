@@ -3,7 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
+import { BridgeOpError } from "../bridge/connection.js";
+import { GodotVersionSchema } from "../bridge/protocol.js";
 import type { BridgePort } from "./bridge.js";
+import { bridgeErrorToResponse } from "./bridge.js";
 import { successResult } from "./result.js";
 
 export interface ProjectToolsDeps {
@@ -80,9 +83,50 @@ function walkForProjects(root: string, recursive: boolean, maxDepth: number): Fo
   return found;
 }
 
-export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
-  void deps; // list_projects needs no bridge; Tasks 3–5 use deps.bridge.
+/**
+ * Sends a bridge op and zod-validates the reply so a stale/buggy addon's
+ * malformed payload becomes a guided error (REQ-A-08) instead of undefined
+ * fields leaking into tool output — the same contract fetchSystemStatus uses.
+ */
+async function requestValidated<T>(
+  bridge: BridgePort,
+  method: string,
+  params: Record<string, unknown>,
+  schema: z.ZodType<T>,
+): Promise<T> {
+  const raw = await bridge.request(method, params);
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new BridgeOpError(
+      `The addon returned a malformed ${method} payload.`,
+      "malformed_payload",
+      [
+        "Update the Godot MCP addon in this project to the version bundled with this server.",
+        "Compare addon_version and server_version via bridge_status, then restart the editor.",
+      ],
+    );
+  }
+  return parsed.data;
+}
 
+const ProjectInfoSchema = z
+  .object({
+    name: z.string(),
+    main_scene: z.string(),
+    features: z.array(z.string()),
+    godot_version: GodotVersionSchema,
+    godot_version_string: z.string(),
+    autoloads: z.array(z.object({ name: z.string(), path: z.string() })),
+    file_counts: z.object({
+      total: z.number().int(),
+      scenes: z.number().int(),
+      scripts: z.number().int(),
+      resources: z.number().int(),
+    }),
+  })
+  .catchall(z.unknown());
+
+export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
   const listProjects: ToolDescriptor = {
     name: "list_projects",
     description:
@@ -140,5 +184,20 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [listProjects];
+  const getProjectInfo: ToolDescriptor = {
+    name: "get_project_info",
+    description:
+      "Report the connected project's name, engine version/features, main scene, autoloads, and file counts.",
+    inputSchema: {},
+    handler: async () => {
+      try {
+        const info = await requestValidated(deps.bridge, "project/info", {}, ProjectInfoSchema);
+        return successResult("Project info", { ...info });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [listProjects, getProjectInfo];
 }

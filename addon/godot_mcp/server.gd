@@ -138,6 +138,8 @@ func _dispatch(method: String, _params: Dictionary) -> Dictionary:
 	match method:
 		"system/status":
 			return {"result": _status()}
+		"project/info":
+			return {"result": _op_project_info()}
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -181,6 +183,74 @@ func _status() -> Dictionary:
 		"uptime_ms": Time.get_ticks_msec() - _start_ms,
 		"queue_depth": _queue.size(),
 	}
+
+
+## Project metadata read from the live editor (REQ-B-02): name/main scene/
+## autoloads from ProjectSettings, versions from the engine, file tallies from
+## the editor's resource filesystem.
+func _op_project_info() -> Dictionary:
+	var hello := _hello()
+	var tally := {"total": 0, "scenes": 0, "scripts": 0}
+	_count_files(EditorInterface.get_resource_filesystem().get_filesystem(), tally)
+	var total := int(tally["total"])
+	var scenes := int(tally["scenes"])
+	var scripts := int(tally["scripts"])
+	return {
+		"name": str(ProjectSettings.get_setting("application/config/name", "")),
+		"main_scene": str(ProjectSettings.get_setting("application/run/main_scene", "")),
+		"features": _project_features(),
+		"godot_version": hello["godot_version"],
+		"godot_version_string": hello["godot_version_string"],
+		"autoloads": _project_autoloads(),
+		"file_counts": {
+			"total": total,
+			"scenes": scenes,
+			"scripts": scripts,
+			"resources": total - scenes - scripts,
+		},
+	}
+
+
+## application/config/features as a plain Array[String].
+func _project_features() -> Array:
+	var raw: Variant = ProjectSettings.get_setting("application/config/features", PackedStringArray())
+	var out: Array = []
+	if raw is PackedStringArray:
+		for feature in raw:
+			out.append(str(feature))
+	return out
+
+
+## [{name, path}] for every autoload/* project setting, stripping the leading
+## "*" that marks a singleton-enabled autoload.
+func _project_autoloads() -> Array:
+	var out: Array = []
+	for prop in ProjectSettings.get_property_list():
+		var pname := str(prop.get("name", ""))
+		if not pname.begins_with("autoload/"):
+			continue
+		var auto_name := pname.substr("autoload/".length())
+		var value := str(ProjectSettings.get_setting(pname, ""))
+		if value.begins_with("*"):
+			value = value.substr(1)
+		out.append({"name": auto_name, "path": value})
+	return out
+
+
+## Recursively tallies total files plus scene/script counts across the editor's
+## resource filesystem tree.
+func _count_files(dir: EditorFileSystemDirectory, tally: Dictionary) -> void:
+	if dir == null:
+		return
+	for i in dir.get_file_count():
+		tally["total"] = int(tally["total"]) + 1
+		var file_type := str(dir.get_file_type(i))
+		if file_type == "PackedScene":
+			tally["scenes"] = int(tally["scenes"]) + 1
+		elif file_type == "GDScript" or file_type == "CSharpScript":
+			tally["scripts"] = int(tally["scripts"]) + 1
+	for i in dir.get_subdir_count():
+		_count_files(dir.get_subdir(i), tally)
 
 
 func _addon_version() -> String:

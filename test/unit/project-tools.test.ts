@@ -4,12 +4,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createProjectTools } from "../../src/tools/project.js";
 import type { BridgePort } from "../../src/tools/bridge.js";
+import { BridgeConnection } from "../../src/bridge/connection.js";
+import { FakeAddonPeer } from "../support/fake-addon-peer.js";
 
 const SERVER_VERSION = "2.0.0-alpha.0";
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()!();
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()!();
 });
 
 function tempDir(): string {
@@ -59,6 +61,93 @@ function writeProject(dir: string, name: string, version: string): void {
     "utf8",
   );
 }
+
+/** A connected BridgeConnection backed by a FakeAddonPeer with the given op handlers. */
+async function connectedBridge(
+  handlers: NonNullable<Parameters<typeof FakeAddonPeer.start>[0]>["handlers"],
+): Promise<BridgeConnection> {
+  const peer = await FakeAddonPeer.start({ handlers });
+  cleanups.push(() => peer.close());
+  const bridge = new BridgeConnection({
+    url: peer.url,
+    serverVersion: SERVER_VERSION,
+    requestTimeoutMs: 2_000,
+    reconnectDelayMs: 50,
+  });
+  bridge.start();
+  cleanups.push(() => bridge.stop());
+  await bridge.waitForState("connected", 5_000);
+  return bridge;
+}
+
+/** A BridgeConnection that never connects (dead port) — exercises disconnected-tool behavior. */
+function deadBridge(): BridgeConnection {
+  const bridge = new BridgeConnection({
+    url: "ws://127.0.0.1:1",
+    serverVersion: SERVER_VERSION,
+    requestTimeoutMs: 100,
+    reconnectDelayMs: 5_000,
+  });
+  cleanups.push(() => bridge.stop());
+  return bridge;
+}
+
+function bridgeTool(bridge: BridgeConnection, name: string) {
+  const tools = createProjectTools({ bridge });
+  const found = tools.find((candidate) => candidate.name === name);
+  if (!found) throw new Error(`tool not registered: ${name}`);
+  return found;
+}
+
+async function callBridge(
+  bridge: BridgeConnection,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<ToolResult> {
+  return (await bridgeTool(bridge, name).handler(args as never, {} as never)) as ToolResult;
+}
+
+const PROJECT_INFO_PAYLOAD = {
+  name: "Sample Game",
+  main_scene: "res://scenes/main.tscn",
+  features: ["4.5", "Forward Plus"],
+  godot_version: { major: 4, minor: 5, patch: 1, status: "stable" },
+  godot_version_string: "4.5.1.stable",
+  autoloads: [{ name: "GameState", path: "res://autoload/game_state.gd" }],
+  file_counts: { total: 7, scenes: 2, scripts: 3, resources: 2 },
+};
+
+describe("get_project_info", () => {
+  it("returns the connected project's info over the bridge", async () => {
+    const bridge = await connectedBridge({ "project/info": () => PROJECT_INFO_PAYLOAD });
+    const result = await callBridge(bridge, "get_project_info");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      name: "Sample Game",
+      main_scene: "res://scenes/main.tscn",
+      godot_version_string: "4.5.1.stable",
+    });
+    const autoloads = (result.structuredContent as { autoloads: Array<{ name: string }> })
+      .autoloads;
+    expect(autoloads[0]!.name).toBe("GameState");
+    expect(result.structuredContent).toHaveProperty("file_counts.scenes", 2);
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callBridge(deadBridge(), "get_project_info");
+    expect(result.isError).toBe(true);
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+
+  it("maps a malformed op payload to a guided error", async () => {
+    const bridge = await connectedBridge({ "project/info": () => ({ name: 123 }) });
+    const result = await callBridge(bridge, "get_project_info");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("malformed");
+  });
+});
 
 describe("list_projects", () => {
   it("finds nested projects with their name and version, skipping hidden/system dirs", async () => {

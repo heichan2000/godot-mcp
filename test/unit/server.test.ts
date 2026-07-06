@@ -36,6 +36,7 @@ describe("server wiring", () => {
       "create_project",
       "install_addon",
       "list_projects",
+      "get_project_info",
     ]);
   });
 
