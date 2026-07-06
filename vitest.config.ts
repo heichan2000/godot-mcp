@@ -21,6 +21,7 @@ const COVERAGE_INCLUDE = [
   "src/config.ts",
   "src/registry.ts",
   "src/bridge/protocol.ts",
+  "src/bridge/traffic-log.ts",
 ];
 
 // Unit tests only (no Godot required). Integration tests live under

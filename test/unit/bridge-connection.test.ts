@@ -134,4 +134,22 @@ describe("BridgeConnection", () => {
     await bridge.waitForState("connected", 10_000);
     expect(bridge.status().state).toBe("connected");
   });
+
+  it("records sent/received frames and lifecycle events in a bounded traffic log", async () => {
+    const peer = await startPeer({
+      handlers: { "system/status": () => ({ ok: true }) },
+    });
+    const bridge = startConnection(peer.url);
+    await bridge.waitForState("connected", 5_000);
+    await bridge.request("system/status");
+    const entries = bridge.traffic(50);
+    const directions = new Set(entries.map((entry) => entry.direction));
+    expect(directions).toContain("sent");
+    expect(directions).toContain("received");
+    expect(directions).toContain("event");
+    const texts = entries.map((entry) => entry.text).join("\n");
+    expect(texts).toContain("system/status"); // the request frame
+    expect(texts).toContain("state -> connected"); // the lifecycle event
+    expect(texts).toContain('"type":"hello"'); // the received hello
+  });
 });

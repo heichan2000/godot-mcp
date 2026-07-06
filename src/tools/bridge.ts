@@ -2,11 +2,13 @@ import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgeStatus } from "../bridge/connection.js";
 import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../bridge/connection.js";
+import type { TrafficEntry } from "../bridge/traffic-log.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
 export interface BridgePort {
   status(): BridgeStatus;
   request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  traffic(limit: number): TrafficEntry[];
 }
 
 export interface BridgeToolsDeps {

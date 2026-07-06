@@ -23,6 +23,7 @@ const stubBridge: BridgePort = {
   request: async () => {
     throw new Error("stub bridge - lint never calls tools");
   },
+  traffic: () => [],
 };
 
 const inventory = buildToolInventory({ bridge: stubBridge });

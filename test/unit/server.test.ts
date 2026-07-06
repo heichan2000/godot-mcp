@@ -18,6 +18,7 @@ const stubBridge: BridgePort = {
   request: async () => {
     throw new Error("stub bridge has no editor");
   },
+  traffic: () => [],
 };
 
 describe("server wiring", () => {

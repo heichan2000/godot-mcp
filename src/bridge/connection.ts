@@ -7,6 +7,7 @@ import {
   parseAddonFrame,
   type Hello,
 } from "./protocol.js";
+import { TrafficLog, type TrafficEntry } from "./traffic-log.js";
 
 export type BridgeState = "connecting" | "handshaking" | "connected" | "mismatch" | "disconnected";
 
@@ -89,6 +90,7 @@ interface PendingRequest {
 export class BridgeConnection {
   private readonly emitter = new EventEmitter();
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly trafficLog = new TrafficLog();
   private socket: WebSocket | null = null;
   private state: BridgeState = "disconnected";
   private hello: Hello | undefined;
@@ -134,6 +136,11 @@ export class BridgeConnection {
     };
   }
 
+  /** The most recent bridge frames and lifecycle events, oldest-first (REQ-A-09). */
+  traffic(limit: number): TrafficEntry[] {
+    return this.trafficLog.tail(limit);
+  }
+
   // Deliberately not `async`: the caller must receive the exact promise we
   // attach the backstop rejection handler to (an async wrapper's outer promise
   // would surface peer-death rejections as unhandled before the caller awaits).
@@ -153,7 +160,9 @@ export class BridgeConnection {
         reject(new BridgeTimeoutError(method, this.options.requestTimeoutMs));
       }, this.options.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      socket.send(encodeRequest({ id, method, params }), (error) => {
+      const encoded = encodeRequest({ id, method, params });
+      this.trafficLog.record("sent", encoded);
+      socket.send(encoded, (error) => {
         if (error) {
           const entry = this.pending.get(id);
           if (entry) {
@@ -214,13 +223,18 @@ export class BridgeConnection {
       }, this.options.requestTimeoutMs);
     });
 
-    socket.on("message", (data) => this.onFrame(String(data)));
+    socket.on("message", (data) => {
+      const text = String(data);
+      this.trafficLog.record("received", text);
+      this.onFrame(text);
+    });
 
     socket.on("close", (code, reason) => {
       if (this.socket !== socket) return;
       this.socket = null;
       this.clearHandshakeTimer();
       this.lastDisconnectReason = reason.toString() || `socket closed (code ${code})`;
+      this.trafficLog.record("event", `socket closed: ${this.lastDisconnectReason}`);
       this.rejectAllPending("editor connection closed mid-request");
       if (this.state !== "mismatch") this.setState("disconnected");
       this.scheduleReconnect();
@@ -255,7 +269,9 @@ export class BridgeConnection {
       this.clearHandshakeTimer();
       this.hello = frame.hello;
       this.mismatch = undefined;
-      this.socket?.send(helloAck(this.options.serverVersion));
+      const ack = helloAck(this.options.serverVersion);
+      this.trafficLog.record("sent", ack);
+      this.socket?.send(ack);
       this.setState("connected");
       return;
     }
@@ -313,6 +329,7 @@ export class BridgeConnection {
   private setState(state: BridgeState): void {
     if (this.state === state) return;
     this.state = state;
+    this.trafficLog.record("event", `state -> ${state}`);
     this.emitter.emit("state", state);
   }
 
