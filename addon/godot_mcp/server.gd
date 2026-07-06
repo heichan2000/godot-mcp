@@ -134,10 +134,16 @@ func _drain_queue() -> void:
 
 ## Named-op dispatch table (REQ-M-03: only named ops exist - there is no
 ## eval/exec pathway). Later slices append branches here via ops/*.gd.
-func _dispatch(method: String, _params: Dictionary) -> Dictionary:
+func _dispatch(method: String, params: Dictionary) -> Dictionary:
 	match method:
 		"system/status":
 			return {"result": _status()}
+		"project/info":
+			return {"result": _op_project_info()}
+		"project/list_resources":
+			return {"result": _op_list_resources(params)}
+		"assets/import":
+			return {"result": _op_import_assets(params)}
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -181,6 +187,136 @@ func _status() -> Dictionary:
 		"uptime_ms": Time.get_ticks_msec() - _start_ms,
 		"queue_depth": _queue.size(),
 	}
+
+
+## Project metadata read from the live editor (REQ-B-02): name/main scene/
+## autoloads from ProjectSettings, versions from the engine, file tallies from
+## the editor's resource filesystem.
+func _op_project_info() -> Dictionary:
+	var hello := _hello()
+	var tally := {"total": 0, "scenes": 0, "scripts": 0}
+	_count_files(EditorInterface.get_resource_filesystem().get_filesystem(), tally)
+	var total := int(tally["total"])
+	var scenes := int(tally["scenes"])
+	var scripts := int(tally["scripts"])
+	return {
+		"name": str(ProjectSettings.get_setting("application/config/name", "")),
+		"main_scene": str(ProjectSettings.get_setting("application/run/main_scene", "")),
+		"features": _project_features(),
+		"godot_version": hello["godot_version"],
+		"godot_version_string": hello["godot_version_string"],
+		"autoloads": _project_autoloads(),
+		"file_counts": {
+			"total": total,
+			"scenes": scenes,
+			"scripts": scripts,
+			"resources": total - scenes - scripts,
+		},
+	}
+
+
+## application/config/features as a plain Array[String].
+func _project_features() -> Array:
+	var raw: Variant = ProjectSettings.get_setting("application/config/features", PackedStringArray())
+	var out: Array = []
+	if raw is PackedStringArray:
+		for feature in raw:
+			out.append(str(feature))
+	return out
+
+
+## [{name, path}] for every autoload/* project setting, stripping the leading
+## "*" that marks a singleton-enabled autoload.
+func _project_autoloads() -> Array:
+	var out: Array = []
+	for prop in ProjectSettings.get_property_list():
+		var pname := str(prop.get("name", ""))
+		if not pname.begins_with("autoload/"):
+			continue
+		var auto_name := pname.substr("autoload/".length())
+		var value := str(ProjectSettings.get_setting(pname, ""))
+		if value.begins_with("*"):
+			value = value.substr(1)
+		out.append({"name": auto_name, "path": value})
+	return out
+
+
+## Recursively tallies total files plus scene/script counts across the editor's
+## resource filesystem tree.
+func _count_files(dir: EditorFileSystemDirectory, tally: Dictionary) -> void:
+	if dir == null:
+		return
+	for i in dir.get_file_count():
+		tally["total"] = int(tally["total"]) + 1
+		var file_type := str(dir.get_file_type(i))
+		if file_type == "PackedScene":
+			tally["scenes"] = int(tally["scenes"]) + 1
+		elif file_type == "GDScript" or file_type == "CSharpScript":
+			tally["scripts"] = int(tally["scripts"]) + 1
+	for i in dir.get_subdir_count():
+		_count_files(dir.get_subdir(i), tally)
+
+
+## Flat resource listing from the editor's filesystem (REQ-B-05): every file's
+## res:// path + resource type, plus its UID text when it has one. Optional
+## `type` and `directory` (res:// prefix) filters narrow the result.
+func _op_list_resources(params: Dictionary) -> Dictionary:
+	var filter_type := str(params.get("type", ""))
+	var filter_dir := str(params.get("directory", ""))
+	var out: Array = []
+	_collect_resources(EditorInterface.get_resource_filesystem().get_filesystem(), filter_type, filter_dir, out)
+	return {"resources": out, "count": out.size()}
+
+
+func _collect_resources(dir: EditorFileSystemDirectory, filter_type: String, filter_dir: String, out: Array) -> void:
+	if dir == null:
+		return
+	for i in dir.get_file_count():
+		var res_path := dir.get_file_path(i)
+		var res_type := str(dir.get_file_type(i))
+		if filter_type != "" and res_type != filter_type:
+			continue
+		if filter_dir != "" and not _under_dir(res_path, filter_dir):
+			continue
+		var entry := {"path": res_path, "type": res_type}
+		var uid_id := ResourceLoader.get_resource_uid(res_path)
+		if uid_id != ResourceUID.INVALID_ID:
+			entry["uid"] = ResourceUID.id_to_text(uid_id)
+		out.append(entry)
+	for i in dir.get_subdir_count():
+		_collect_resources(dir.get_subdir(i), filter_type, filter_dir, out)
+
+
+## True when `res_path` is `prefix` itself or lives directly under it — avoids
+## the sibling-prefix false match ("res://scenes" vs "res://scenes2/x").
+func _under_dir(res_path: String, prefix: String) -> bool:
+	var normalized := prefix.trim_suffix("/")
+	return res_path == normalized or res_path.begins_with(normalized + "/")
+
+
+## Editor-native scan/reimport (REQ-J-01) — the successor to headless --import.
+## With explicit `paths`: register each file with the resource filesystem
+## (update_file) then reimport them synchronously, so a just-dropped file is a
+## usable res:// resource on return. With no paths: kick off an async
+## whole-project rescan (progress frames arrive in a later slice, #75). The
+## PRODUCT never spawns Godot (REQ-A-01) — this runs inside the live editor.
+func _op_import_assets(params: Dictionary) -> Dictionary:
+	var fs := EditorInterface.get_resource_filesystem()
+	var raw: Variant = params.get("paths", [])
+	var paths := PackedStringArray()
+	if raw is Array:
+		for entry in raw:
+			paths.append(str(entry))
+	if paths.is_empty():
+		fs.scan()
+		return {"scan_started": true, "reimported": []}
+	for res_path in paths:
+		fs.update_file(res_path)
+	fs.reimport_files(paths)
+	var reimported: Array = []
+	for res_path in paths:
+		reimported.append(res_path)
+	return {"scan_started": false, "reimported": reimported}
 
 
 func _addon_version() -> String:

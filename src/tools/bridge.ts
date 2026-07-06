@@ -6,6 +6,7 @@ import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../br
 import type { TrafficEntry } from "../bridge/traffic-log.js";
 import { TRAFFIC_LOG_CAPACITY } from "../bridge/traffic-log.js";
 import { SystemStatusSchema, type SystemStatus } from "../bridge/protocol.js";
+import { successResult } from "./result.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
 export interface BridgePort {
@@ -66,13 +67,6 @@ export function bridgeErrorToResponse(error: unknown) {
     });
   }
   throw error;
-}
-
-function successResult(label: string, payload: Record<string, unknown>) {
-  return {
-    content: [{ type: "text" as const, text: `${label}: ${JSON.stringify(payload)}` }],
-    structuredContent: payload,
-  };
 }
 
 /**

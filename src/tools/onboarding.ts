@@ -16,6 +16,7 @@ import {
   pathContainmentErrorResponse,
 } from "../godot/paths.js";
 import type { ToolDescriptor } from "../registry.js";
+import { successResult } from "./result.js";
 
 export interface OnboardingToolsDeps {
   /** MCP server version; also the bundled addon version (kept in lockstep). */
@@ -45,13 +46,6 @@ const MAIN_SCENE_TEMPLATE = `[gd_scene format=3]
 // warning-free. Any well-formed SVG imports as a texture in Godot 4.
 const ICON_SVG_TEMPLATE = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#478cbf"/></svg>
 `;
-
-function successResult(label: string, payload: Record<string, unknown>) {
-  return {
-    content: [{ type: "text" as const, text: `${label}: ${JSON.stringify(payload)}` }],
-    structuredContent: payload,
-  };
-}
 
 /** Strips characters that would break the quoted value in project.godot. */
 function sanitizeName(name: string): string {
