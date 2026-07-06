@@ -21,12 +21,13 @@ export interface BridgeToolsDeps {
 
 /**
  * Standard guidance for "no editor is connected" (REQ-A-10). Reused verbatim
- * by every tool slice; the final wording (incl. addon_install, which arrives
- * in #66) is refined by #65/#66 without changing the 1.x pointer.
+ * by every tool slice; names the onboarding tools (create_project /
+ * install_addon, #66) and keeps the 1.x pointer for headless users.
  */
 export const EDITOR_NOT_CONNECTED_SOLUTIONS: string[] = [
   "Open the project in the Godot editor and keep it running - v2 tools execute inside a live editor.",
-  "Install the bridge addon by copying addon/godot_mcp into the project's addons/ folder, then enable 'Godot MCP' under Project > Project Settings > Plugins.",
+  "Install the bridge addon by running install_addon on your project (it copies addon/godot_mcp into the project's addons/ folder), then enable 'Godot MCP' under Project > Project Settings > Plugins.",
+  "Starting from an empty folder? Run create_project to scaffold a project first, then install_addon.",
   "Check bridge_status for the connection state and last disconnect reason the server sees.",
   "Need headless (no-editor) workflows? Use @cradial/godot-mcp@1.x - the 1.x line keeps the CLI-based tools.",
 ];
@@ -144,11 +145,19 @@ export function createBridgeTools(deps: BridgeToolsDeps): ToolDescriptor[] {
       }
       try {
         const live = await fetchSystemStatus(deps.bridge);
+        const addonStale = live.addon_version !== deps.serverVersion;
         return successResult("Bridge status", {
           state: "connected",
           server_version: deps.serverVersion,
           protocol_version: status.protocolVersion,
           addon_version: live.addon_version,
+          bundled_addon_version: deps.serverVersion,
+          addon_update_available: addonStale,
+          ...(addonStale
+            ? {
+                addon_update_action: `Run install_addon to copy the bundled addon (v${deps.serverVersion}) into the project, then re-enable the plugin and restart the editor.`,
+              }
+            : {}),
           godot_version: live.godot_version,
           godot_version_string: live.godot_version_string,
           features: live.features,

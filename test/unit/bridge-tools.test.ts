@@ -193,6 +193,34 @@ describe("bridge_status hardening (#65)", () => {
   });
 });
 
+describe("bridge_status addon staleness (REQ-A-03)", () => {
+  it("flags a stale addon with an install_addon update action", async () => {
+    const staleStatus = { ...statusResult, addon_version: "1.9.0" };
+    const bridge = await connectedBridge({ handlers: { "system/status": () => staleStatus } });
+    const result = await call(bridge, "bridge_status");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      state: "connected",
+      addon_version: "1.9.0",
+      bundled_addon_version: SERVER_VERSION,
+      addon_update_available: true,
+    });
+    const action = (result.structuredContent as { addon_update_action: string })
+      .addon_update_action;
+    expect(action).toContain("install_addon");
+  });
+
+  it("marks a matching addon version up to date", async () => {
+    const bridge = await connectedBridge(); // default addon_version === SERVER_VERSION
+    const result = await call(bridge, "bridge_status");
+    expect(result.structuredContent).toMatchObject({
+      addon_update_available: false,
+      bundled_addon_version: SERVER_VERSION,
+    });
+    expect(result.structuredContent).not.toHaveProperty("addon_update_action");
+  });
+});
+
 describe("get_bridge_log", () => {
   it("returns recent traffic entries after a round-trip", async () => {
     const bridge = await connectedBridge();
