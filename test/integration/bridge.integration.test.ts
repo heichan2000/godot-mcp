@@ -98,4 +98,31 @@ describe.runIf(hasGodot)("bridge walking skeleton (real editor)", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("@cradial/godot-mcp@1.x");
   }, 60_000);
+
+  it("relaunching the editor restores service with no MCP-server restart (REQ-A-04)", async () => {
+    editor = launchEditor(projectDir); // same project, same port; bridge must re-handshake
+    await bridge.waitForState("connected", 150_000);
+    const result = (await client.callTool({ name: "get_godot_version", arguments: {} })) as {
+      isError?: boolean;
+      structuredContent?: Record<string, unknown>;
+    };
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent!.server_version).toBe(SERVER_VERSION);
+  }, 180_000);
+
+  it("get_bridge_log returns bounded recent traffic including the reconnect events", async () => {
+    const result = (await client.callTool({
+      name: "get_bridge_log",
+      arguments: { lines: 50 },
+    })) as { isError?: boolean; structuredContent?: Record<string, unknown> };
+    expect(result.isError).toBeFalsy();
+    const entries = result.structuredContent!.entries as Array<{
+      direction: string;
+      text: string;
+    }>;
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.length).toBeLessThanOrEqual(50);
+    const joined = entries.map((entry) => entry.text).join("\n");
+    expect(joined).toContain("state -> connected"); // lifecycle events made it into the log
+  }, 60_000);
 });
