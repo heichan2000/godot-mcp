@@ -134,3 +134,37 @@ export async function probeGodotVersionString(): Promise<string> {
   const { stdout } = await execFileAsync(godotPath!, ["--version"], { timeout: 60_000 });
   return stdout.trim();
 }
+
+/**
+ * Runs a headless import pass and returns combined stdout+stderr so a test can
+ * assert the scaffold imports without ERROR/WARNING lines (REQ-B-01). Test
+ * infra may exec Godot; the product never does (REQ-A-01).
+ */
+export async function importProjectCaptured(projectDir: string): Promise<string> {
+  const { stdout, stderr } = await execFileAsync(
+    godotPath!,
+    ["--headless", "--import", "--path", projectDir],
+    { timeout: 120_000 },
+  );
+  return `${stdout}\n${stderr}`;
+}
+
+/**
+ * Appends the [editor_plugins] enable entry to project.godot - the one manual
+ * "enable step" the onboarding flow documents (normally done via the editor's
+ * Plugins UI). No-op if the section already exists.
+ */
+export function enablePlugin(projectDir: string): void {
+  const projectFile = path.join(projectDir, "project.godot");
+  if (readFileSync(projectFile, "utf8").includes("[editor_plugins]")) return;
+  appendFileSync(
+    projectFile,
+    `\n[editor_plugins]\n\nenabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")\n`,
+  );
+}
+
+/** "4.5.1.stable.official.abc" -> "4.5" (config/features minor tag). */
+export function godotMinorTag(versionString: string): string {
+  const [major, minor] = versionString.split(".");
+  return `${major}.${minor}`;
+}
