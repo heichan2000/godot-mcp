@@ -216,6 +216,23 @@ describe("BridgeConnection", () => {
     });
     expect(closeCode).toBe(1013);
   });
+
+  it("fake peer survives a malformed frame without wedging its serial queue", async () => {
+    const peer = await startPeer({ handlers: { "test/op": () => ({ ok: true }) } });
+    const { default: WebSocket } = await import("ws");
+    const raw = new WebSocket(peer.url);
+    await new Promise<void>((resolve) => raw.once("open", () => resolve()));
+    raw.send("this is not json");
+    raw.send(JSON.stringify({ id: 7, method: "test/op", params: {} }));
+    const reply = await new Promise<Record<string, unknown>>((resolve) => {
+      raw.on("message", (data) => {
+        const frame = JSON.parse(String(data)) as Record<string, unknown>;
+        if (frame.id === 7) resolve(frame);
+      });
+    });
+    expect(reply.result).toEqual({ ok: true });
+    raw.close();
+  });
 });
 
 describe("reconnectBackoffMs", () => {

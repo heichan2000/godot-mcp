@@ -95,8 +95,12 @@ export class FakeAddonPeer {
     });
     socket.on("message", (data) => {
       // Strictly serial, arrival order - mirrors the addon's one-op-per-frame
-      // queue (REQ-A-12). Without this, slow handlers would interleave.
-      this.processing = this.processing.then(() => this.onMessage(socket, String(data)));
+      // queue (REQ-A-12). Without this, slow handlers would interleave. The
+      // catch keeps a malformed frame from rejecting `processing` forever and
+      // wedging every later message on this peer.
+      this.processing = this.processing
+        .then(() => this.onMessage(socket, String(data)))
+        .catch(() => undefined);
     });
     if (!this.options.omitHello) {
       socket.send(JSON.stringify(this.hello()));
