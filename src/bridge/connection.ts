@@ -7,6 +7,7 @@ import {
   parseAddonFrame,
   type Hello,
 } from "./protocol.js";
+import { TrafficLog, type TrafficEntry } from "./traffic-log.js";
 
 export type BridgeState = "connecting" | "handshaking" | "connected" | "mismatch" | "disconnected";
 
@@ -17,6 +18,14 @@ export interface BridgeStatus {
   protocolVersion: number;
   pendingRequests: number;
   lastDisconnectReason?: string;
+  /**
+   * Reconnects scheduled since the last successful handshake. Climbs on every
+   * connect/close cycle - including a repeating protocol mismatch - and resets
+   * to 0 only when a hello is accepted. Diagnostic only.
+   */
+  reconnectAttempts: number;
+  /** Set while state === "mismatch": both protocol versions, for diagnostics. */
+  mismatch?: ProtocolMismatch;
 }
 
 export interface ProtocolMismatch {
@@ -68,6 +77,8 @@ export interface BridgeConnectionOptions {
   requestTimeoutMs: number;
   /** Delay between reconnect attempts. Default 1000ms; tests use ~50ms. */
   reconnectDelayMs?: number;
+  /** Backoff cap for repeated failed reconnects. Default 10000ms. */
+  maxReconnectDelayMs?: number;
   /** DEBUG-gated stderr logger; never stdout (REQ-A-09). */
   log?: (message: string) => void;
 }
@@ -76,6 +87,15 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: NodeJS.Timeout;
+}
+
+/**
+ * Capped exponential backoff for reconnect attempts (REQ-A-04): base, 2x,
+ * 4x ... capped at maxMs. Exponent is clamped so large attempt counts cannot
+ * overflow to Infinity.
+ */
+export function reconnectBackoffMs(attempt: number, baseMs: number, maxMs: number): number {
+  return Math.min(baseMs * 2 ** Math.min(attempt, 20), maxMs);
 }
 
 /**
@@ -89,12 +109,14 @@ interface PendingRequest {
 export class BridgeConnection {
   private readonly emitter = new EventEmitter();
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly trafficLog = new TrafficLog();
   private socket: WebSocket | null = null;
   private state: BridgeState = "disconnected";
   private hello: Hello | undefined;
   private mismatch: ProtocolMismatch | undefined;
   private lastDisconnectReason: string | undefined;
   private nextId = 1;
+  private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private handshakeTimer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -131,7 +153,14 @@ export class BridgeConnection {
       protocolVersion: PROTOCOL_VERSION,
       pendingRequests: this.pending.size,
       lastDisconnectReason: this.lastDisconnectReason,
+      reconnectAttempts: this.reconnectAttempts,
+      mismatch: this.mismatch,
     };
+  }
+
+  /** The most recent bridge frames and lifecycle events, oldest-first (REQ-A-09). */
+  traffic(limit: number): TrafficEntry[] {
+    return this.trafficLog.tail(limit);
   }
 
   // Deliberately not `async`: the caller must receive the exact promise we
@@ -153,7 +182,9 @@ export class BridgeConnection {
         reject(new BridgeTimeoutError(method, this.options.requestTimeoutMs));
       }, this.options.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      socket.send(encodeRequest({ id, method, params }), (error) => {
+      const encoded = encodeRequest({ id, method, params });
+      this.trafficLog.record("sent", encoded);
+      socket.send(encoded, (error) => {
         if (error) {
           const entry = this.pending.get(id);
           if (entry) {
@@ -214,13 +245,18 @@ export class BridgeConnection {
       }, this.options.requestTimeoutMs);
     });
 
-    socket.on("message", (data) => this.onFrame(String(data)));
+    socket.on("message", (data) => {
+      const text = String(data);
+      this.trafficLog.record("received", text);
+      this.onFrame(text);
+    });
 
     socket.on("close", (code, reason) => {
       if (this.socket !== socket) return;
       this.socket = null;
       this.clearHandshakeTimer();
       this.lastDisconnectReason = reason.toString() || `socket closed (code ${code})`;
+      this.trafficLog.record("event", `socket closed: ${this.lastDisconnectReason}`);
       this.rejectAllPending("editor connection closed mid-request");
       if (this.state !== "mismatch") this.setState("disconnected");
       this.scheduleReconnect();
@@ -255,7 +291,10 @@ export class BridgeConnection {
       this.clearHandshakeTimer();
       this.hello = frame.hello;
       this.mismatch = undefined;
-      this.socket?.send(helloAck(this.options.serverVersion));
+      this.reconnectAttempts = 0;
+      const ack = helloAck(this.options.serverVersion);
+      this.trafficLog.record("sent", ack);
+      this.socket?.send(ack);
       this.setState("connected");
       return;
     }
@@ -296,10 +335,16 @@ export class BridgeConnection {
 
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer !== null) return;
+    const delayMs = reconnectBackoffMs(
+      this.reconnectAttempts,
+      this.options.reconnectDelayMs ?? 1_000,
+      this.options.maxReconnectDelayMs ?? 10_000,
+    );
+    this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, this.options.reconnectDelayMs ?? 1_000);
+    }, delayMs);
   }
 
   private rejectAllPending(reason: string): void {
@@ -313,6 +358,7 @@ export class BridgeConnection {
   private setState(state: BridgeState): void {
     if (this.state === state) return;
     this.state = state;
+    this.trafficLog.record("event", `state -> ${state}`);
     this.emitter.emit("state", state);
   }
 

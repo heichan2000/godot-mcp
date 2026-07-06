@@ -14,10 +14,12 @@ const stubBridge: BridgePort = {
     serverVersion: SERVER_VERSION,
     protocolVersion: 1,
     pendingRequests: 0,
+    reconnectAttempts: 0,
   }),
   request: async () => {
     throw new Error("stub bridge has no editor");
   },
+  traffic: () => [],
 };
 
 describe("server wiring", () => {
@@ -27,7 +29,7 @@ describe("server wiring", () => {
 
   it("builds the walking-skeleton inventory", () => {
     const names = buildToolInventory({ bridge: stubBridge }).map((tool) => tool.name);
-    expect(names).toEqual(["bridge_status", "get_godot_version"]);
+    expect(names).toEqual(["bridge_status", "get_godot_version", "get_bridge_log"]);
   });
 
   it("createServer registers without touching the bridge", () => {

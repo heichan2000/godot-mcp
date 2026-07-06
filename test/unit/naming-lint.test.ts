@@ -10,7 +10,7 @@ import type { BridgePort } from "../../src/tools/bridge.js";
  * demands. The human-facing strategy lives in docs/tool-naming.md.
  */
 const NAME_PATTERN = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/;
-const PARAM_PATTERN = /^[a-z][a-z0-9_]*$/;
+const PARAM_PATTERN = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 const DESCRIPTION_BUDGET = 200;
 
 const stubBridge: BridgePort = {
@@ -19,10 +19,12 @@ const stubBridge: BridgePort = {
     serverVersion: SERVER_VERSION,
     protocolVersion: 1,
     pendingRequests: 0,
+    reconnectAttempts: 0,
   }),
   request: async () => {
     throw new Error("stub bridge - lint never calls tools");
   },
+  traffic: () => [],
 };
 
 const inventory = buildToolInventory({ bridge: stubBridge });
@@ -51,6 +53,7 @@ describe("REQ-A-05 naming lint", () => {
         `${tool.name}: description over budget (${tool.description.length})`,
       ).toBeLessThanOrEqual(DESCRIPTION_BUDGET);
       expect(tool.description, `${tool.name}: description must be single-line`).not.toContain("\n");
+      expect(tool.description, `${tool.name}: description must not contain CR`).not.toContain("\r");
     }
   });
 

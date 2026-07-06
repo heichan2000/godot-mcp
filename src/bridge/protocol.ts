@@ -34,6 +34,26 @@ export const HelloSchema = z.object({
 export type Hello = z.infer<typeof HelloSchema>;
 
 /**
+ * Payload of the addon's `system/status` op. Validated (not cast) on the
+ * server side so a stale or buggy addon surfaces as a structured error
+ * instead of undefined fields leaking into tool output. `catchall` lets
+ * future addon versions add fields without a server release.
+ */
+export const SystemStatusSchema = z
+  .object({
+    protocol_version: z.number().int(),
+    addon_version: z.string(),
+    godot_version: GodotVersionSchema,
+    godot_version_string: z.string(),
+    features: z.object({ dotnet: z.boolean() }).catchall(z.boolean()),
+    project_path: z.string(),
+    uptime_ms: z.number(),
+    queue_depth: z.number().int(),
+  })
+  .catchall(z.unknown());
+export type SystemStatus = z.infer<typeof SystemStatusSchema>;
+
+/**
  * Minimal shape used to recognize a hello frame and read its
  * `protocol_version` before attempting the full schema. A future addon
  * speaking a different protocol version may rename, drop, or add required

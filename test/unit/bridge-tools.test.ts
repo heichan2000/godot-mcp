@@ -61,6 +61,15 @@ async function call(bridge: BridgeConnection, name: string): Promise<ToolResult>
   return (await tool.handler({}, {} as never)) as ToolResult;
 }
 
+async function callWith(
+  bridge: BridgeConnection,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const tool = toolByName(bridge, name);
+  return (await tool.handler(args as never, {} as never)) as ToolResult;
+}
+
 describe("get_godot_version", () => {
   it("returns engine + addon + server versions over the bridge when connected", async () => {
     const bridge = await connectedBridge();
@@ -126,5 +135,96 @@ describe("bridge_status", () => {
     expect(result.structuredContent).toMatchObject({ state: "disconnected" });
     const guidance = (result.structuredContent as { guidance: string[] }).guidance;
     expect(guidance.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+});
+
+describe("bridge_status hardening (#65)", () => {
+  it("reports the addon's protocol version in mismatch state (not null)", async () => {
+    const bridge = await connectedBridge({ protocolVersion: 99 });
+    const result = await call(bridge, "bridge_status");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      state: "mismatch",
+      addon_protocol_version: 99,
+    });
+  });
+
+  it("includes pending_requests in the disconnected payload", async () => {
+    const bridge = new BridgeConnection({
+      url: "ws://127.0.0.1:1",
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 100,
+      reconnectDelayMs: 5_000,
+    });
+    cleanups.push(() => bridge.stop());
+    const result = await call(bridge, "bridge_status");
+    expect(result.structuredContent).toMatchObject({ pending_requests: 0 });
+  });
+
+  it("returns a structured error when the addon sends a malformed system/status", async () => {
+    const bridge = await connectedBridge({
+      handlers: { "system/status": () => ({ nonsense: true }) },
+    });
+    const result = await call(bridge, "bridge_status");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("system/status");
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.length).toBeGreaterThan(0);
+  });
+
+  it("not-connected guidance covers setup steps and the 1.x pointer (REQ-A-10)", async () => {
+    const bridge = new BridgeConnection({
+      url: "ws://127.0.0.1:1",
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 100,
+      reconnectDelayMs: 5_000,
+    });
+    cleanups.push(() => bridge.stop());
+    const result = await call(bridge, "get_godot_version");
+    expect(result.isError).toBe(true);
+    const joined = (
+      result.structuredContent as { possibleSolutions: string[] }
+    ).possibleSolutions.join(" ");
+    expect(joined).toContain("Godot editor"); // open the editor
+    expect(joined).toContain("addons/"); // install the addon
+    expect(joined).toContain("bridge_status"); // diagnose
+    expect(joined).toContain("@cradial/godot-mcp@1.x"); // headless pointer
+  });
+});
+
+describe("get_bridge_log", () => {
+  it("returns recent traffic entries after a round-trip", async () => {
+    const bridge = await connectedBridge();
+    await call(bridge, "bridge_status"); // generate request/response traffic
+    const result = await call(bridge, "get_bridge_log");
+    expect(result.isError).toBeUndefined();
+    const payload = result.structuredContent as {
+      entries: Array<{ at: string; direction: string; text: string }>;
+      count: number;
+    };
+    expect(payload.count).toBe(payload.entries.length);
+    expect(payload.entries.length).toBeGreaterThan(0);
+    expect(payload.entries.map((entry) => entry.text).join("\n")).toContain("system/status");
+  });
+
+  it("honors the lines parameter", async () => {
+    const bridge = await connectedBridge();
+    await call(bridge, "bridge_status");
+    const result = await callWith(bridge, "get_bridge_log", { lines: 2 });
+    const payload = result.structuredContent as { entries: unknown[] };
+    expect(payload.entries).toHaveLength(2);
+  });
+
+  it("is not an error when the bridge is disconnected - the log is exactly what you want then", async () => {
+    const bridge = new BridgeConnection({
+      url: "ws://127.0.0.1:1",
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 100,
+      reconnectDelayMs: 5_000,
+    });
+    cleanups.push(() => bridge.stop());
+    const result = await call(bridge, "get_bridge_log");
+    expect(result.isError).toBeUndefined();
   });
 });

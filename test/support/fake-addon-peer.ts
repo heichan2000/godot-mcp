@@ -6,7 +6,17 @@ import {
   type Hello,
 } from "../../src/bridge/protocol.js";
 
-type HandlerResult = unknown | { __error: BridgeErrorPayload };
+/**
+ * Handlers return the op's result verbatim, or `errorOutcome(...)` to make
+ * the peer reply with an error frame. (A plain union with `unknown` would
+ * collapse, so the error path is a tagged wrapper instead of a union arm.)
+ */
+type HandlerResult = unknown;
+
+/** Wrap an error payload so the peer replies with an error frame instead of a result. */
+export function errorOutcome(error: BridgeErrorPayload): { __error: BridgeErrorPayload } {
+  return { __error: error };
+}
 
 export interface FakeAddonPeerOptions {
   /** Bind port; defaults to an ephemeral free port (read it back via `peer.port`). */
@@ -68,9 +78,14 @@ export class FakeAddonPeer {
   }
 
   private activeClient: WebSocket | null = null;
+  private processing: Promise<void> = Promise.resolve();
 
   private onConnection(socket: WebSocket): void {
-    if (this.activeClient !== null && this.activeClient.readyState === this.activeClient.OPEN) {
+    // NOTE: the real addon drops a second TCP connection BEFORE the WebSocket
+    // handshake; this fake refuses AFTER the handshake with close code 1013.
+    // Both look like a retryable failure to the client - do not write tests
+    // that depend on 1013 reaching a real addon.
+    if (this.activeClient !== null && this.activeClient.readyState !== this.activeClient.CLOSED) {
       socket.close(1013, "godot-mcp: a bridge client is already connected");
       return;
     }
@@ -79,7 +94,13 @@ export class FakeAddonPeer {
       if (this.activeClient === socket) this.activeClient = null;
     });
     socket.on("message", (data) => {
-      void this.onMessage(socket, String(data));
+      // Strictly serial, arrival order - mirrors the addon's one-op-per-frame
+      // queue (REQ-A-12). Without this, slow handlers would interleave. The
+      // catch keeps a malformed frame from rejecting `processing` forever and
+      // wedging every later message on this peer.
+      this.processing = this.processing
+        .then(() => this.onMessage(socket, String(data)))
+        .catch(() => undefined);
     });
     if (!this.options.omitHello) {
       socket.send(JSON.stringify(this.hello()));
@@ -125,7 +146,22 @@ export class FakeAddonPeer {
       );
       return;
     }
-    const outcome = await handler(params);
+    let outcome: HandlerResult;
+    try {
+      outcome = await handler(params);
+    } catch (error) {
+      socket.send(
+        JSON.stringify({
+          id,
+          error: {
+            code: "fake_peer_handler_error",
+            message: `Fake peer handler for "${method}" threw: ${String(error)}`,
+            possibleSolutions: ["Fix the test's handler - real addon ops never throw raw."],
+          },
+        }),
+      );
+      return;
+    }
     if (typeof outcome === "object" && outcome !== null && "__error" in outcome) {
       socket.send(
         JSON.stringify({ id, error: (outcome as { __error: BridgeErrorPayload }).__error }),
