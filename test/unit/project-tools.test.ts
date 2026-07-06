@@ -202,3 +202,44 @@ describe("list_projects", () => {
     expect(result.content[0]!.text.toLowerCase()).toContain("absolute");
   });
 });
+
+const RESOURCES_PAYLOAD = {
+  resources: [
+    { path: "res://scenes/main.tscn", type: "PackedScene", uid: "uid://abc123" },
+    { path: "res://textures/sprite.png", type: "CompressedTexture2D" },
+    { path: "res://scripts/player.gd", type: "GDScript", uid: "uid://def456" },
+  ],
+  count: 3,
+};
+
+describe("list_resources", () => {
+  it("returns the editor's resource listing over the bridge", async () => {
+    const bridge = await connectedBridge({ "project/list_resources": () => RESOURCES_PAYLOAD });
+    const result = await callBridge(bridge, "list_resources");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ count: 3 });
+    const resources = (result.structuredContent as { resources: Array<{ path: string }> })
+      .resources;
+    expect(resources.map((r) => r.path)).toContain("res://textures/sprite.png");
+  });
+
+  it("forwards type and directory filters to the op params", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "project/list_resources": (params) => {
+        seen = params;
+        return { resources: [], count: 0 };
+      },
+    });
+    await callBridge(bridge, "list_resources", { type: "PackedScene", directory: "res://scenes" });
+    expect(seen).toMatchObject({ type: "PackedScene", directory: "res://scenes" });
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callBridge(deadBridge(), "list_resources");
+    expect(result.isError).toBe(true);
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+});

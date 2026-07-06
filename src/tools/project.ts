@@ -126,6 +126,15 @@ const ProjectInfoSchema = z
   })
   .catchall(z.unknown());
 
+const ListResourcesSchema = z
+  .object({
+    resources: z.array(
+      z.object({ path: z.string(), type: z.string(), uid: z.string().optional() }),
+    ),
+    count: z.number().int(),
+  })
+  .catchall(z.unknown());
+
 export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
   const listProjects: ToolDescriptor = {
     name: "list_projects",
@@ -199,5 +208,40 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [listProjects, getProjectInfo];
+  const listResources: ToolDescriptor = {
+    name: "list_resources",
+    description:
+      "List the connected project's resource files (res:// path, type, uid), optionally filtered by type or directory.",
+    inputSchema: {
+      type: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Resource type to filter by, e.g. "PackedScene" or "GDScript".'),
+      directory: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('res:// directory prefix to restrict the listing, e.g. "res://scenes".'),
+    },
+    handler: async (args) => {
+      const { type, directory } = args as { type?: string; directory?: string };
+      const params: Record<string, unknown> = {};
+      if (type !== undefined) params.type = type;
+      if (directory !== undefined) params.directory = directory;
+      try {
+        const listing = await requestValidated(
+          deps.bridge,
+          "project/list_resources",
+          params,
+          ListResourcesSchema,
+        );
+        return successResult("Resources", { ...listing });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [listProjects, getProjectInfo, listResources];
 }
