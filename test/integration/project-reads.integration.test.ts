@@ -1,4 +1,5 @@
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BridgeConnection } from "../../src/bridge/connection.js";
 import { SERVER_VERSION } from "../../src/server.js";
@@ -100,4 +101,80 @@ describe.runIf(hasGodot)("project reads against the sample project (REQ-B-02/B-0
     expect(resources.length).toBeGreaterThan(0);
     expect(resources.every((r) => r.path.startsWith("res://scenes"))).toBe(true);
   });
+});
+
+// A minimal valid 1x1 PNG — the "asset dropped into the project" fixture.
+const ONE_BY_ONE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/** Polls list_resources until `resPath` appears (import can finalize a frame late), or times out. */
+async function waitForResource(
+  bridge: BridgeConnection,
+  resPath: string,
+  attempts = 20,
+): Promise<{ path: string; type: string } | undefined> {
+  for (let i = 0; i < attempts; i += 1) {
+    const result = await callTool(bridge, "list_resources");
+    const resources =
+      (result.structuredContent!.resources as Array<{ path: string; type: string }>) ?? [];
+    const hit = resources.find((r) => r.path === resPath);
+    if (hit) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return undefined;
+}
+
+describe.runIf(hasGodot)("import_assets makes a dropped PNG a usable texture (REQ-J-01)", () => {
+  let projectDir: string;
+  let editor: EditorHandle;
+  let bridge: BridgeConnection;
+
+  beforeAll(async () => {
+    projectDir = freshSampleProject();
+    installAddon(projectDir);
+    const port = await pickFreePort();
+    setBridgePort(projectDir, port);
+    await importPass(projectDir);
+    editor = launchEditor(projectDir);
+    bridge = new BridgeConnection({
+      url: `ws://127.0.0.1:${port}`,
+      serverVersion: SERVER_VERSION,
+      requestTimeoutMs: 30_000,
+      reconnectDelayMs: 500,
+      log: (message) => {
+        if (process.env.DEBUG) console.error(message);
+      },
+    });
+    bridge.start();
+    await bridge.waitForState("connected", 150_000);
+  }, 240_000);
+
+  afterAll(async () => {
+    await bridge?.stop();
+    await editor?.kill();
+    if (projectDir) rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("imports a newly dropped PNG so it is a usable res:// texture", async () => {
+    // Drop the file into the live project AFTER the editor booted — the editor
+    // does not know about it until import_assets tells its filesystem to scan.
+    writeFileSync(
+      path.join(projectDir, "dropped.png"),
+      Buffer.from(ONE_BY_ONE_PNG_BASE64, "base64"),
+    );
+
+    const result = await callTool(bridge, "import_assets", { paths: ["res://dropped.png"] });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      scan_started: false,
+      reimported: ["res://dropped.png"],
+    });
+
+    const imported = await waitForResource(bridge, "res://dropped.png");
+    expect(
+      imported,
+      "dropped.png did not become a listed resource after import_assets",
+    ).toBeDefined();
+    expect(imported!.type).toMatch(/Texture/); // imported as a texture, not a raw file
+  }, 120_000);
 });
