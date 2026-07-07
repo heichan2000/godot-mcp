@@ -157,6 +157,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _op_scene_list_open()
 		"scene/mark_unsaved":
 			return _op_scene_mark_unsaved()
+		"scene/save":
+			return _op_scene_save(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -442,6 +444,50 @@ func _op_scene_mark_unsaved() -> Dictionary:
 	_dirty_scenes[current] = true
 	EditorInterface.mark_scene_as_unsaved()
 	return {"result": {"scene_path": current, "dirty": true}}
+
+
+## Save current / named / save-as / all (REQ-C-02) and clear the dirty ledger for
+## what was saved. A named scene is focused first so the editor's save targets it.
+func _op_scene_save(params: Dictionary) -> Dictionary:
+	if bool(params.get("all", false)):
+		EditorInterface.save_all_scenes()
+		var saved_all: Array = []
+		for p in EditorInterface.get_open_scenes():
+			var res_all := str(p)
+			_dirty_scenes.erase(res_all)
+			saved_all.append(res_all)
+		var cur_all := _current_scene_path()
+		return {"result": {"saved": saved_all, "current": cur_all if cur_all != "" else null, "all": true}}
+
+	var target := str(params.get("scene_path", ""))
+	if target != "":
+		if not (target in EditorInterface.get_open_scenes()):
+			return _err("scene_not_open", "Scene %s is not open; open it before saving." % target, [
+				"Open it with open_scene first, or omit scene_path to save the current scene.",
+			])
+		if _current_scene_path() != target:
+			EditorInterface.open_scene_from_path(target)
+
+	var current := _current_scene_path()
+	if current == "":
+		return _err("no_current_scene", "There is no current scene to save.", [
+			"Open or create a scene first, or pass scene_path.",
+		])
+
+	var new_path := str(params.get("new_path", ""))
+	if new_path != "":
+		EditorInterface.save_scene_as(new_path)
+		_dirty_scenes.erase(current)
+		_dirty_scenes.erase(new_path)
+		return {"result": {"saved": [new_path], "current": new_path, "all": false}}
+
+	var err := EditorInterface.save_scene()
+	if err != OK:
+		return _err("save_failed", "Failed to save %s (error %d)." % [current, err], [
+			"Check that the scene's file is writable.",
+		])
+	_dirty_scenes.erase(current)
+	return {"result": {"saved": [current], "current": current, "all": false}}
 
 
 func _addon_version() -> String:

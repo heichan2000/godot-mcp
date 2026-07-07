@@ -42,6 +42,7 @@ describe("server wiring", () => {
       "create_scene",
       "open_scene",
       "get_open_scenes",
+      "save_scene",
     ]);
   });
 

@@ -61,6 +61,14 @@ const OpenScenesSchema = z
   })
   .catchall(z.unknown());
 
+const SaveSceneSchema = z
+  .object({
+    saved: z.array(z.string()),
+    current: z.string().nullable(),
+    all: z.boolean(),
+  })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -148,5 +156,48 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene, openScene, getOpenScenes];
+  const saveScene: ToolDescriptor = {
+    name: "save_scene",
+    description:
+      "Save the current scene, a named scene, a save-as copy (new_path), or all open scenes; reports what was saved.",
+    inputSchema: {
+      scene_path: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Scene to save; defaults to the current scene. Must be open."),
+      new_path: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Save-as target path; saves the current/named scene to this new res:// path."),
+      all: z.boolean().optional().describe("Save every open scene (default false)."),
+    },
+    handler: async (args) => {
+      const { scene_path, new_path, all } = args as {
+        scene_path?: string;
+        new_path?: string;
+        all?: boolean;
+      };
+      const params: Record<string, unknown> = { all: all ?? false };
+      if (scene_path !== undefined) {
+        const contained = resolveScenePath(deps.bridge, scene_path);
+        if ("error" in contained) return contained.error;
+        params.scene_path = contained.resPath;
+      }
+      if (new_path !== undefined) {
+        const contained = resolveScenePath(deps.bridge, new_path);
+        if ("error" in contained) return contained.error;
+        params.new_path = contained.resPath;
+      }
+      try {
+        const outcome = await requestValidated(deps.bridge, "scene/save", params, SaveSceneSchema);
+        return successResult("Saved scene", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [createScene, openScene, getOpenScenes, saveScene];
 }

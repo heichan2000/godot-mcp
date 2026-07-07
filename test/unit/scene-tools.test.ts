@@ -217,3 +217,50 @@ describe("get_open_scenes", () => {
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
   });
 });
+
+describe("save_scene", () => {
+  it("saves the current scene and reports it clean", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/save": (params) => {
+        seen = params;
+        return { saved: ["res://a.tscn"], current: "res://a.tscn", all: false };
+      },
+    });
+    const result = await callScene(bridge, "save_scene");
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ all: false });
+    expect(result.structuredContent).toMatchObject({ saved: ["res://a.tscn"], all: false });
+  });
+
+  it("forwards a contained new_path for save-as", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/save": (params) => {
+        seen = params;
+        return { saved: ["res://copy.tscn"], current: "res://copy.tscn", all: false };
+      },
+    });
+    await callScene(bridge, "save_scene", { new_path: "copy.tscn" });
+    expect(seen).toMatchObject({ new_path: "res://copy.tscn" });
+  });
+
+  it("forwards all:true to save every open scene", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/save": (params) => {
+        seen = params;
+        return { saved: ["res://a.tscn", "res://b.tscn"], current: "res://a.tscn", all: true };
+      },
+    });
+    const result = await callScene(bridge, "save_scene", { all: true });
+    expect(seen).toMatchObject({ all: true });
+    expect((result.structuredContent as { saved: string[] }).saved).toHaveLength(2);
+  });
+
+  it("rejects an escaping new_path before the bridge", async () => {
+    const result = await callScene(deadBridge(), "save_scene", { new_path: "../out.tscn" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("outside the project root");
+  });
+});
