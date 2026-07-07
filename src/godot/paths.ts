@@ -257,3 +257,67 @@ export function pathContainmentErrorResponse(error: PathContainmentError): Error
     possibleSolutions: possibleSolutionsFor(error.reason),
   });
 }
+
+/** Godot's virtual project root prefix. */
+export const RES_PREFIX = "res://";
+
+/**
+ * Structural containment for a Godot `res://` scene path (REQ-M-01). `res://`
+ * is the project's virtual root, so this string-level check rejects anything
+ * that climbs out (`..`), is filesystem-absolute (`/x`, `C:\x`), or names a
+ * foreign scheme (`user://`, `file://`), and normalizes separators/`.`/interior
+ * `..`. Returns the canonical `res://<rel>` form to forward to the addon plus
+ * the stripped `<rel>` for the caller's realpath check against the live project
+ * root. This is deliberately NOT a realpath check — the path is virtual and the
+ * op runs inside the editor; scene.ts layers `assertInsideRoot` on `relative`
+ * when an editor is connected (symlink-safe), and the addon re-rejects `..`.
+ */
+export function containResPath(scenePath: string): { resPath: string; relative: string } {
+  const trimmed = scenePath.trim();
+  const schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed);
+  if (schemeMatch && schemeMatch[1]!.toLowerCase() !== "res") {
+    throw new PathContainmentError(
+      "outside-root",
+      RES_PREFIX,
+      scenePath,
+      `Path "${scenePath}" must be a res:// path inside the project, not a ${schemeMatch[1]}:// path.`,
+    );
+  }
+  const rest = trimmed.startsWith(RES_PREFIX) ? trimmed.slice(RES_PREFIX.length) : trimmed;
+  const unified = rest.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:/.test(unified) || unified.startsWith("/")) {
+    throw new PathContainmentError(
+      "absolute",
+      RES_PREFIX,
+      scenePath,
+      `Path "${scenePath}" must be relative to the project root (res://), not absolute.`,
+    );
+  }
+  const out: string[] = [];
+  for (const segment of unified.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (out.length === 0) {
+        throw new PathContainmentError(
+          "outside-root",
+          RES_PREFIX,
+          scenePath,
+          `Path "${scenePath}" resolves outside the project root (res://).`,
+        );
+      }
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  if (out.length === 0) {
+    throw new PathContainmentError(
+      "outside-root",
+      RES_PREFIX,
+      scenePath,
+      `Path "${scenePath}" does not name a file inside the project.`,
+    );
+  }
+  const relative = out.join("/");
+  return { resPath: RES_PREFIX + relative, relative };
+}
