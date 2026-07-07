@@ -49,6 +49,10 @@ const CreateSceneSchema = z
   })
   .catchall(z.unknown());
 
+const OpenSceneSchema = z
+  .object({ scene_path: z.string(), current: z.string() })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -88,5 +92,33 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene];
+  const openScene: ToolDescriptor = {
+    name: "open_scene",
+    description:
+      "Open (or focus) a scene tab in the editor and make it the current scene that authoring ops target.",
+    inputSchema: {
+      scene_path: z
+        .string()
+        .min(1, "scene_path must not be empty.")
+        .describe('Project path of the scene to open, e.g. "res://scenes/main.tscn".'),
+    },
+    handler: async (args) => {
+      const { scene_path } = args as { scene_path: string };
+      const contained = resolveScenePath(deps.bridge, scene_path);
+      if ("error" in contained) return contained.error;
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "scene/open",
+          { scene_path: contained.resPath },
+          OpenSceneSchema,
+        );
+        return successResult("Opened scene", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [createScene, openScene];
 }

@@ -144,3 +144,39 @@ describe("create_scene", () => {
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
   });
 });
+
+describe("open_scene", () => {
+  it("opens the contained scene and reports it current", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/open": (params) => {
+        seen = params;
+        return { scene_path: "res://scenes/main.tscn", current: "res://scenes/main.tscn" };
+      },
+    });
+    const result = await callScene(bridge, "open_scene", { scene_path: "scenes/main.tscn" });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ scene_path: "res://scenes/main.tscn" });
+    expect(result.structuredContent).toMatchObject({ current: "res://scenes/main.tscn" });
+  });
+
+  it("surfaces the addon's not-found refusal as a guided error", async () => {
+    const bridge = await connectedBridge({
+      "scene/open": () =>
+        errorOutcome({
+          code: "scene_not_found",
+          message: "No scene exists at res://missing.tscn.",
+          possibleSolutions: ["Create it with create_scene, or check the path."],
+        }),
+    });
+    const result = await callScene(bridge, "open_scene", { scene_path: "res://missing.tscn" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("No scene exists");
+  });
+
+  it("rejects an escaping scene_path before the bridge", async () => {
+    const result = await callScene(deadBridge(), "open_scene", { scene_path: "res://../x.tscn" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text.toLowerCase()).toContain("outside the project root");
+  });
+});

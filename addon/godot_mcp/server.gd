@@ -146,6 +146,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return {"result": _op_import_assets(params)}
 		"scene/create":
 			return _op_scene_create(params)
+		"scene/open":
+			return _op_scene_open(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -383,6 +385,22 @@ func _op_scene_create(params: Dictionary) -> Dictionary:
 	EditorInterface.get_resource_filesystem().update_file(res_path)
 	EditorInterface.open_scene_from_path(res_path)
 	return {"result": {"scene_path": res_path, "root_node_type": type, "created": true}}
+
+
+## Open/focus a scene tab and make it current (REQ-C-03). open_scene_from_path
+## focuses an already-open tab rather than duplicating it.
+func _op_scene_open(params: Dictionary) -> Dictionary:
+	var res_path := _scene_res_path(str(params.get("scene_path", "")))
+	if res_path == "":
+		return _err("path_escape", "scene_path is not a valid in-project res:// path.", [
+			"Pass a res:// path with no '..' segments.",
+		])
+	if not FileAccess.file_exists(res_path):
+		return _err("scene_not_found", "No scene exists at %s." % res_path, [
+			"Create it with create_scene, or check the path for typos.",
+		])
+	EditorInterface.open_scene_from_path(res_path)
+	return {"result": {"scene_path": res_path, "current": res_path}}
 
 
 func _addon_version() -> String:

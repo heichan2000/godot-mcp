@@ -40,6 +40,7 @@ describe("server wiring", () => {
       "list_resources",
       "import_assets",
       "create_scene",
+      "open_scene",
     ]);
   });
 
