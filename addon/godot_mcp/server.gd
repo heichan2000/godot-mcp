@@ -163,6 +163,10 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _op_scene_close(params)
 		"node/add":
 			return _op_node_add(params)
+		"edit/undo":
+			return _op_edit_undo()
+		"edit/redo":
+			return _op_edit_redo()
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -569,6 +573,34 @@ func _op_node_add(params: Dictionary) -> Dictionary:
 		"node_type": type,
 		"parent_path": str(scene_root.get_path_to(parent)),
 	}}
+
+
+## Step the CURRENT scene's editor undo history back one action (REQ-M-05 test
+## seam; internal op, no MCP tool). This is the very history Ctrl+Z drives.
+func _op_edit_undo() -> Dictionary:
+	return _edit_history_step(true)
+
+
+## Step the CURRENT scene's editor undo history forward one action (redo).
+func _op_edit_redo() -> Dictionary:
+	return _edit_history_step(false)
+
+
+## Resolve the edited scene's own UndoRedo (via its history id) and step it.
+## get_history_undo_redo is advanced API, but stepping the real scene history is
+## exactly what proves an agent mutation is registered there. Returns the bool
+## the step yielded (false at a history boundary is a no-op, not an error).
+func _edit_history_step(is_undo: bool) -> Dictionary:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return _err("no_current_scene", "There is no open scene whose history to step.", [
+			"Open or create a scene first.",
+		])
+	var manager := EditorInterface.get_editor_undo_redo()
+	var hist_id := manager.get_object_history_id(scene_root)
+	var ur := manager.get_history_undo_redo(hist_id)
+	var stepped := ur.undo() if is_undo else ur.redo()
+	return {"result": {"stepped": stepped, "undo": is_undo}}
 
 
 func _addon_version() -> String:
