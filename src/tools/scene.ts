@@ -53,6 +53,14 @@ const OpenSceneSchema = z
   .object({ scene_path: z.string(), current: z.string() })
   .catchall(z.unknown());
 
+const OpenScenesSchema = z
+  .object({
+    current: z.string().nullable(),
+    scenes: z.array(z.object({ path: z.string(), dirty: z.boolean() })),
+    count: z.number().int(),
+  })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -120,5 +128,25 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene, openScene];
+  const getOpenScenes: ToolDescriptor = {
+    name: "get_open_scenes",
+    description:
+      "List the editor's open scene tabs with each scene's unsaved (dirty) flag, and which scene is current.",
+    inputSchema: {},
+    handler: async () => {
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "scene/list_open",
+          {},
+          OpenScenesSchema,
+        );
+        return successResult("Open scenes", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [createScene, openScene, getOpenScenes];
 }

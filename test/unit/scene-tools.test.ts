@@ -180,3 +180,40 @@ describe("open_scene", () => {
     expect(result.content[0]!.text.toLowerCase()).toContain("outside the project root");
   });
 });
+
+describe("get_open_scenes", () => {
+  it("reports the current scene and per-scene dirty flags", async () => {
+    const bridge = await connectedBridge({
+      "scene/list_open": () => ({
+        current: "res://a.tscn",
+        scenes: [
+          { path: "res://a.tscn", dirty: true },
+          { path: "res://b.tscn", dirty: false },
+        ],
+        count: 2,
+      }),
+    });
+    const result = await callScene(bridge, "get_open_scenes");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ current: "res://a.tscn", count: 2 });
+    const scenes = (result.structuredContent as { scenes: Array<{ path: string; dirty: boolean }> })
+      .scenes;
+    expect(scenes.find((s) => s.path === "res://a.tscn")!.dirty).toBe(true);
+  });
+
+  it("reports current as null when no scene is open", async () => {
+    const bridge = await connectedBridge({
+      "scene/list_open": () => ({ current: null, scenes: [], count: 0 }),
+    });
+    const result = await callScene(bridge, "get_open_scenes");
+    expect(result.structuredContent).toMatchObject({ current: null, count: 0 });
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callScene(deadBridge(), "get_open_scenes");
+    expect(result.isError).toBe(true);
+    const solutions = (result.structuredContent as { possibleSolutions: string[] })
+      .possibleSolutions;
+    expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+});

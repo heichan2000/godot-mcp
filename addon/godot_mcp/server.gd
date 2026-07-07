@@ -17,6 +17,11 @@ var _hello_sent := false
 var _queue: Array[Dictionary] = []
 var _start_ms := 0
 
+## Per-scene unsaved-changes ledger (REQ-C-02). Godot 4.6 has no getter for a
+## scene's unsaved state, so the addon tracks it: a mutation sets res_path->true,
+## save clears it, get_open_scenes reports it.
+var _dirty_scenes: Dictionary = {}
+
 
 func _ready() -> void:
 	_start_ms = Time.get_ticks_msec()
@@ -148,6 +153,10 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _op_scene_create(params)
 		"scene/open":
 			return _op_scene_open(params)
+		"scene/list_open":
+			return _op_scene_list_open()
+		"scene/mark_unsaved":
+			return _op_scene_mark_unsaved()
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -401,6 +410,38 @@ func _op_scene_open(params: Dictionary) -> Dictionary:
 		])
 	EditorInterface.open_scene_from_path(res_path)
 	return {"result": {"scene_path": res_path, "current": res_path}}
+
+
+## res:// path of the current edited scene, or "" if none / an unsaved new scene.
+func _current_scene_path() -> String:
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return ""
+	return root.scene_file_path
+
+
+## Open scene tabs with their dirty flags + which is current (REQ-C-02/C-03).
+func _op_scene_list_open() -> Dictionary:
+	var current := _current_scene_path()
+	var scenes: Array = []
+	for p in EditorInterface.get_open_scenes():
+		var res_p := str(p)
+		scenes.append({"path": res_p, "dirty": bool(_dirty_scenes.get(res_p, false))})
+	var current_value: Variant = current if current != "" else null
+	return {"result": {"current": current_value, "scenes": scenes, "count": scenes.size()}}
+
+
+## Mark the current scene unsaved (internal op; the seam node ops reuse). Sets
+## the ledger AND the editor's own tab marker so a human sees the * immediately.
+func _op_scene_mark_unsaved() -> Dictionary:
+	var current := _current_scene_path()
+	if current == "":
+		return _err("no_current_scene", "There is no current saved scene to mark unsaved.", [
+			"Open or create a scene first.",
+		])
+	_dirty_scenes[current] = true
+	EditorInterface.mark_scene_as_unsaved()
+	return {"result": {"scene_path": current, "dirty": true}}
 
 
 func _addon_version() -> String:
