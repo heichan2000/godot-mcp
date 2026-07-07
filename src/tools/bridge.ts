@@ -70,6 +70,32 @@ export function bridgeErrorToResponse(error: unknown) {
 }
 
 /**
+ * Sends a bridge op and zod-validates the reply so a stale/buggy addon's
+ * malformed payload becomes a guided error (REQ-A-08) instead of undefined
+ * fields leaking into tool output. Shared by every bridge-op tool file.
+ */
+export async function requestValidated<T>(
+  bridge: BridgePort,
+  method: string,
+  params: Record<string, unknown>,
+  schema: z.ZodType<T>,
+): Promise<T> {
+  const raw = await bridge.request(method, params);
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new BridgeOpError(
+      `The addon returned a malformed ${method} payload.`,
+      "malformed_payload",
+      [
+        "Update the Godot MCP addon in this project to the version bundled with this server.",
+        "Compare addon_version and server_version via bridge_status, then restart the editor.",
+      ],
+    );
+  }
+  return parsed.data;
+}
+
+/**
  * Runs system/status and validates the payload (REQ-A-08: a stale addon's
  * malformed reply becomes a guided error, not undefined tool output).
  */

@@ -17,6 +17,11 @@ var _hello_sent := false
 var _queue: Array[Dictionary] = []
 var _start_ms := 0
 
+## Per-scene unsaved-changes ledger (REQ-C-02). Godot 4.6 has no getter for a
+## scene's unsaved state, so the addon tracks it: a mutation sets res_path->true,
+## save clears it, get_open_scenes reports it.
+var _dirty_scenes: Dictionary = {}
+
 
 func _ready() -> void:
 	_start_ms = Time.get_ticks_msec()
@@ -144,6 +149,18 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return {"result": _op_list_resources(params)}
 		"assets/import":
 			return {"result": _op_import_assets(params)}
+		"scene/create":
+			return _op_scene_create(params)
+		"scene/open":
+			return _op_scene_open(params)
+		"scene/list_open":
+			return _op_scene_list_open()
+		"scene/mark_unsaved":
+			return _op_scene_mark_unsaved()
+		"scene/save":
+			return _op_scene_save(params)
+		"scene/close":
+			return _op_scene_close(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -317,6 +334,190 @@ func _op_import_assets(params: Dictionary) -> Dictionary:
 	for res_path in paths:
 		reimported.append(res_path)
 	return {"scan_started": false, "reimported": reimported}
+
+
+## Structured op-error outcome (mirrors the TS BridgeOpError shape). Ops return
+## this instead of {"result": ...} to make the bridge client reject with guidance.
+func _err(code: String, message: String, solutions: Array) -> Dictionary:
+	return {"error": {"code": code, "message": message, "possibleSolutions": solutions}}
+
+
+## Addon-side containment (REQ-M-01, defense-in-depth): the server already
+## normalized this to a canonical res:// path, so we only re-reject a residual
+## "res://" prefix miss or a ".." segment. Returns the res:// path or "" on reject.
+func _scene_res_path(raw: String) -> String:
+	if not raw.begins_with("res://"):
+		return ""
+	if "/../" in raw or raw.ends_with("/.."):
+		return ""
+	return raw
+
+
+## Create a .tscn with the chosen root type and open it (REQ-C-01). Refuses to
+## overwrite an existing scene; the new scene is written to disk (so it reloads
+## clean and is import-registered) then opened as the current tab.
+func _op_scene_create(params: Dictionary) -> Dictionary:
+	var res_path := _scene_res_path(str(params.get("scene_path", "")))
+	if res_path == "":
+		return _err("path_escape", "scene_path is not a valid in-project res:// path.", [
+			"Pass a res:// path with no '..' segments.",
+		])
+	if FileAccess.file_exists(res_path):
+		return _err("scene_exists", "A scene already exists at %s." % res_path, [
+			"Choose a different scene_path, or open the existing scene with open_scene.",
+		])
+	var type := str(params.get("root_node_type", "Node"))
+	if type == "":
+		type = "Node"
+	if not ClassDB.class_exists(type) or not ClassDB.can_instantiate(type) or not ClassDB.is_parent_class(type, "Node"):
+		return _err("invalid_root_type", "root_node_type '%s' is not an instantiable Node class." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, Node3D, or Control.",
+		])
+	var root := ClassDB.instantiate(type) as Node
+	if root == null:
+		return _err("invalid_root_type", "Could not instantiate root_node_type '%s'." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, Node3D, or Control.",
+		])
+	root.name = type
+	var dir_path := res_path.get_base_dir()
+	if dir_path != "" and not DirAccess.dir_exists_absolute(dir_path):
+		DirAccess.make_dir_recursive_absolute(dir_path)
+	var packed := PackedScene.new()
+	var pack_err := packed.pack(root)
+	if pack_err != OK:
+		root.free()
+		return _err("save_failed", "Failed to pack the new scene (error %d)." % pack_err, [
+			"Retry, or report this if it persists.",
+		])
+	var save_err := ResourceSaver.save(packed, res_path)
+	root.free()
+	if save_err != OK:
+		return _err("save_failed", "Failed to write %s (error %d)." % [res_path, save_err], [
+			"Check that the target directory is writable.",
+		])
+	EditorInterface.get_resource_filesystem().update_file(res_path)
+	EditorInterface.open_scene_from_path(res_path)
+	return {"result": {"scene_path": res_path, "root_node_type": type, "created": true}}
+
+
+## Open/focus a scene tab and make it current (REQ-C-03). open_scene_from_path
+## focuses an already-open tab rather than duplicating it.
+func _op_scene_open(params: Dictionary) -> Dictionary:
+	var res_path := _scene_res_path(str(params.get("scene_path", "")))
+	if res_path == "":
+		return _err("path_escape", "scene_path is not a valid in-project res:// path.", [
+			"Pass a res:// path with no '..' segments.",
+		])
+	if not FileAccess.file_exists(res_path):
+		return _err("scene_not_found", "No scene exists at %s." % res_path, [
+			"Create it with create_scene, or check the path for typos.",
+		])
+	EditorInterface.open_scene_from_path(res_path)
+	return {"result": {"scene_path": res_path, "current": res_path}}
+
+
+## res:// path of the current edited scene, or "" if none / an unsaved new scene.
+func _current_scene_path() -> String:
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return ""
+	return root.scene_file_path
+
+
+## Open scene tabs with their dirty flags + which is current (REQ-C-02/C-03).
+func _op_scene_list_open() -> Dictionary:
+	var current := _current_scene_path()
+	var scenes: Array = []
+	for p in EditorInterface.get_open_scenes():
+		var res_p := str(p)
+		scenes.append({"path": res_p, "dirty": bool(_dirty_scenes.get(res_p, false))})
+	var current_value: Variant = current if current != "" else null
+	return {"result": {"current": current_value, "scenes": scenes, "count": scenes.size()}}
+
+
+## Mark the current scene unsaved (internal op; the seam node ops reuse). Sets
+## the ledger AND the editor's own tab marker so a human sees the * immediately.
+func _op_scene_mark_unsaved() -> Dictionary:
+	var current := _current_scene_path()
+	if current == "":
+		return _err("no_current_scene", "There is no current saved scene to mark unsaved.", [
+			"Open or create a scene first.",
+		])
+	_dirty_scenes[current] = true
+	EditorInterface.mark_scene_as_unsaved()
+	return {"result": {"scene_path": current, "dirty": true}}
+
+
+## Save current / named / save-as / all (REQ-C-02) and clear the dirty ledger for
+## what was saved. A named scene is focused first so the editor's save targets it.
+func _op_scene_save(params: Dictionary) -> Dictionary:
+	if bool(params.get("all", false)):
+		EditorInterface.save_all_scenes()
+		var saved_all: Array = []
+		for p in EditorInterface.get_open_scenes():
+			var res_all := str(p)
+			_dirty_scenes.erase(res_all)
+			saved_all.append(res_all)
+		var cur_all := _current_scene_path()
+		return {"result": {"saved": saved_all, "current": cur_all if cur_all != "" else null, "all": true}}
+
+	var target := str(params.get("scene_path", ""))
+	if target != "":
+		if not (target in EditorInterface.get_open_scenes()):
+			return _err("scene_not_open", "Scene %s is not open; open it before saving." % target, [
+				"Open it with open_scene first, or omit scene_path to save the current scene.",
+			])
+		if _current_scene_path() != target:
+			EditorInterface.open_scene_from_path(target)
+
+	var current := _current_scene_path()
+	if current == "":
+		return _err("no_current_scene", "There is no current scene to save.", [
+			"Open or create a scene first, or pass scene_path.",
+		])
+
+	var new_path := str(params.get("new_path", ""))
+	if new_path != "":
+		EditorInterface.save_scene_as(new_path)
+		_dirty_scenes.erase(current)
+		_dirty_scenes.erase(new_path)
+		return {"result": {"saved": [new_path], "current": new_path, "all": false}}
+
+	var err := EditorInterface.save_scene()
+	if err != OK:
+		return _err("save_failed", "Failed to save %s (error %d)." % [current, err], [
+			"Check that the scene's file is writable.",
+		])
+	_dirty_scenes.erase(current)
+	return {"result": {"saved": [current], "current": current, "all": false}}
+
+
+## Close a scene tab (REQ-C-03). close_scene() closes the CURRENT scene and
+## always discards, so we (1) resolve the target (named or current), (2) refuse
+## if it is dirty and discard is false, (3) focus it, then (4) close.
+func _op_scene_close(params: Dictionary) -> Dictionary:
+	var discard := bool(params.get("discard", false))
+	var target := str(params.get("scene_path", ""))
+	if target == "":
+		target = _current_scene_path()
+	if target == "":
+		return _err("no_current_scene", "There is no current scene to close.", [
+			"Open a scene first, or pass scene_path.",
+		])
+	if not (target in EditorInterface.get_open_scenes()):
+		return _err("scene_not_open", "Scene %s is not open." % target, [
+			"Pass the path of a scene that is currently open (see get_open_scenes).",
+		])
+	if bool(_dirty_scenes.get(target, false)) and not discard:
+		return _err("unsaved_changes", "%s has unsaved changes." % target, [
+			"Save it with save_scene first, or pass discard:true to close and lose the changes.",
+		])
+	if _current_scene_path() != target:
+		EditorInterface.open_scene_from_path(target)
+	EditorInterface.close_scene()
+	_dirty_scenes.erase(target)
+	var current := _current_scene_path()
+	return {"result": {"scene_path": target, "closed": true, "current": current if current != "" else null}}
 
 
 func _addon_version() -> String:

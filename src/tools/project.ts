@@ -3,10 +3,9 @@ import path from "node:path";
 import { z } from "zod";
 import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
-import { BridgeOpError } from "../bridge/connection.js";
 import { GodotVersionSchema } from "../bridge/protocol.js";
 import type { BridgePort } from "./bridge.js";
-import { bridgeErrorToResponse } from "./bridge.js";
+import { bridgeErrorToResponse, requestValidated } from "./bridge.js";
 import { successResult } from "./result.js";
 
 export interface ProjectToolsDeps {
@@ -81,32 +80,6 @@ function walkForProjects(root: string, recursive: boolean, maxDepth: number): Fo
   };
   visit(root, 0);
   return found;
-}
-
-/**
- * Sends a bridge op and zod-validates the reply so a stale/buggy addon's
- * malformed payload becomes a guided error (REQ-A-08) instead of undefined
- * fields leaking into tool output — the same contract fetchSystemStatus uses.
- */
-async function requestValidated<T>(
-  bridge: BridgePort,
-  method: string,
-  params: Record<string, unknown>,
-  schema: z.ZodType<T>,
-): Promise<T> {
-  const raw = await bridge.request(method, params);
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    throw new BridgeOpError(
-      `The addon returned a malformed ${method} payload.`,
-      "malformed_payload",
-      [
-        "Update the Godot MCP addon in this project to the version bundled with this server.",
-        "Compare addon_version and server_version via bridge_status, then restart the editor.",
-      ],
-    );
-  }
-  return parsed.data;
 }
 
 const ProjectInfoSchema = z
