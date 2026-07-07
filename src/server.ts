@@ -7,6 +7,7 @@ import { BridgeConnection } from "./bridge/connection.js";
 import { loadConfig } from "./config.js";
 import { registerAll, type ToolDescriptor } from "./registry.js";
 import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
+import { createNodeTools } from "./tools/node.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
 import { createSceneTools } from "./tools/scene.js";
@@ -33,6 +34,7 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
     }),
     ...createProjectTools({ bridge: deps.bridge }),
     ...createSceneTools({ bridge: deps.bridge }),
+    ...createNodeTools({ bridge: deps.bridge }),
   ];
 }
 

@@ -161,6 +161,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _op_scene_save(params)
 		"scene/close":
 			return _op_scene_close(params)
+		"node/add":
+			return _op_node_add(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -518,6 +520,55 @@ func _op_scene_close(params: Dictionary) -> Dictionary:
 	_dirty_scenes.erase(target)
 	var current := _current_scene_path()
 	return {"result": {"scene_path": target, "closed": true, "current": current if current != "" else null}}
+
+
+## Add a node of a requested type under a parent in the edited scene (REQ-C-04),
+## registered with the editor's UndoRedo so a human can Ctrl+Z it (REQ-M-05).
+## The ClassDB gate carries forward from 1.0 verbatim: real class, Node-derived,
+## instantiable - rejected BEFORE the tree is touched. The node's owner is set to
+## the scene root so it serializes into the .tscn on save.
+func _op_node_add(params: Dictionary) -> Dictionary:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return _err("no_current_scene", "There is no open scene to add a node to.", [
+			"Open or create a scene first with open_scene or create_scene.",
+		])
+	var type := str(params.get("node_type", ""))
+	if not ClassDB.class_exists(type) or not ClassDB.is_parent_class(type, "Node") or not ClassDB.can_instantiate(type):
+		return _err("invalid_node_type", "node_type '%s' is not an instantiable Node class." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, Sprite2D, or Control.",
+			"Check the spelling against Godot's class list.",
+		])
+	var parent: Node = scene_root
+	var parent_path := str(params.get("parent_path", ""))
+	if parent_path != "" and parent_path != "." and parent_path != "/root":
+		parent = scene_root.get_node_or_null(NodePath(parent_path))
+		if parent == null:
+			return _err("parent_not_found", "No node exists at parent_path '%s'." % parent_path, [
+				"Pass a node path relative to the scene root, e.g. \".\" or \"Player\".",
+				"Omit parent_path to add under the scene root.",
+			])
+	var node := ClassDB.instantiate(type) as Node
+	if node == null:
+		return _err("invalid_node_type", "Could not instantiate node_type '%s'." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, or Control.",
+		])
+	var requested_name := str(params.get("node_name", ""))
+	node.name = requested_name if requested_name != "" else type
+	var undo := EditorInterface.get_editor_undo_redo()
+	undo.create_action("Add %s" % node.name, UndoRedo.MERGE_DISABLE, scene_root)
+	undo.add_do_method(parent, "add_child", node)
+	undo.add_do_method(node, "set_owner", scene_root)
+	undo.add_do_reference(node)
+	undo.add_undo_method(parent, "remove_child", node)
+	undo.commit_action()
+	_dirty_scenes[scene_root.scene_file_path] = true
+	return {"result": {
+		"node_path": str(scene_root.get_path_to(node)),
+		"name": str(node.name),
+		"node_type": type,
+		"parent_path": str(scene_root.get_path_to(parent)),
+	}}
 
 
 func _addon_version() -> String:
