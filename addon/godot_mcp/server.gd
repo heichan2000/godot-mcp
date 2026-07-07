@@ -159,6 +159,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _op_scene_mark_unsaved()
 		"scene/save":
 			return _op_scene_save(params)
+		"scene/close":
+			return _op_scene_close(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -488,6 +490,34 @@ func _op_scene_save(params: Dictionary) -> Dictionary:
 		])
 	_dirty_scenes.erase(current)
 	return {"result": {"saved": [current], "current": current, "all": false}}
+
+
+## Close a scene tab (REQ-C-03). close_scene() closes the CURRENT scene and
+## always discards, so we (1) resolve the target (named or current), (2) refuse
+## if it is dirty and discard is false, (3) focus it, then (4) close.
+func _op_scene_close(params: Dictionary) -> Dictionary:
+	var discard := bool(params.get("discard", false))
+	var target := str(params.get("scene_path", ""))
+	if target == "":
+		target = _current_scene_path()
+	if target == "":
+		return _err("no_current_scene", "There is no current scene to close.", [
+			"Open a scene first, or pass scene_path.",
+		])
+	if not (target in EditorInterface.get_open_scenes()):
+		return _err("scene_not_open", "Scene %s is not open." % target, [
+			"Pass the path of a scene that is currently open (see get_open_scenes).",
+		])
+	if bool(_dirty_scenes.get(target, false)) and not discard:
+		return _err("unsaved_changes", "%s has unsaved changes." % target, [
+			"Save it with save_scene first, or pass discard:true to close and lose the changes.",
+		])
+	if _current_scene_path() != target:
+		EditorInterface.open_scene_from_path(target)
+	EditorInterface.close_scene()
+	_dirty_scenes.erase(target)
+	var current := _current_scene_path()
+	return {"result": {"scene_path": target, "closed": true, "current": current if current != "" else null}}
 
 
 func _addon_version() -> String:

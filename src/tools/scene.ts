@@ -69,6 +69,14 @@ const SaveSceneSchema = z
   })
   .catchall(z.unknown());
 
+const CloseSceneSchema = z
+  .object({
+    scene_path: z.string(),
+    closed: z.boolean(),
+    current: z.string().nullable(),
+  })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -199,5 +207,42 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene, openScene, getOpenScenes, saveScene];
+  const closeScene: ToolDescriptor = {
+    name: "close_scene",
+    description:
+      "Close a scene tab (default: the current scene); refuses to discard unsaved changes unless discard is true.",
+    inputSchema: {
+      scene_path: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Scene to close; defaults to the current scene. Must be open."),
+      discard: z
+        .boolean()
+        .optional()
+        .describe("Close even with unsaved changes, discarding them (default false)."),
+    },
+    handler: async (args) => {
+      const { scene_path, discard } = args as { scene_path?: string; discard?: boolean };
+      const params: Record<string, unknown> = { discard: discard ?? false };
+      if (scene_path !== undefined) {
+        const contained = resolveScenePath(deps.bridge, scene_path);
+        if ("error" in contained) return contained.error;
+        params.scene_path = contained.resPath;
+      }
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "scene/close",
+          params,
+          CloseSceneSchema,
+        );
+        return successResult("Closed scene", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [createScene, openScene, getOpenScenes, saveScene, closeScene];
 }

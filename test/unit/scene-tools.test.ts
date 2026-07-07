@@ -264,3 +264,45 @@ describe("save_scene", () => {
     expect(result.content[0]!.text.toLowerCase()).toContain("outside the project root");
   });
 });
+
+describe("close_scene", () => {
+  it("closes the named scene and reports the new current", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/close": (params) => {
+        seen = params;
+        return { scene_path: "res://a.tscn", closed: true, current: "res://b.tscn" };
+      },
+    });
+    const result = await callScene(bridge, "close_scene", { scene_path: "a.tscn" });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ scene_path: "res://a.tscn", discard: false });
+    expect(result.structuredContent).toMatchObject({ closed: true, current: "res://b.tscn" });
+  });
+
+  it("forwards discard:true so a dirty scene can be closed", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/close": (params) => {
+        seen = params;
+        return { scene_path: "res://a.tscn", closed: true, current: null };
+      },
+    });
+    await callScene(bridge, "close_scene", { scene_path: "res://a.tscn", discard: true });
+    expect(seen).toMatchObject({ discard: true });
+  });
+
+  it("surfaces the addon's unsaved-changes refusal as a guided error", async () => {
+    const bridge = await connectedBridge({
+      "scene/close": () =>
+        errorOutcome({
+          code: "unsaved_changes",
+          message: "res://a.tscn has unsaved changes.",
+          possibleSolutions: ["Save it with save_scene first, or pass discard:true to lose them."],
+        }),
+    });
+    const result = await callScene(bridge, "close_scene", { scene_path: "res://a.tscn" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("unsaved changes");
+  });
+});
