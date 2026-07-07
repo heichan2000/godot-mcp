@@ -144,6 +144,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return {"result": _op_list_resources(params)}
 		"assets/import":
 			return {"result": _op_import_assets(params)}
+		"scene/create":
+			return _op_scene_create(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
@@ -317,6 +319,70 @@ func _op_import_assets(params: Dictionary) -> Dictionary:
 	for res_path in paths:
 		reimported.append(res_path)
 	return {"scan_started": false, "reimported": reimported}
+
+
+## Structured op-error outcome (mirrors the TS BridgeOpError shape). Ops return
+## this instead of {"result": ...} to make the bridge client reject with guidance.
+func _err(code: String, message: String, solutions: Array) -> Dictionary:
+	return {"error": {"code": code, "message": message, "possibleSolutions": solutions}}
+
+
+## Addon-side containment (REQ-M-01, defense-in-depth): the server already
+## normalized this to a canonical res:// path, so we only re-reject a residual
+## "res://" prefix miss or a ".." segment. Returns the res:// path or "" on reject.
+func _scene_res_path(raw: String) -> String:
+	if not raw.begins_with("res://"):
+		return ""
+	if "/../" in raw or raw.ends_with("/.."):
+		return ""
+	return raw
+
+
+## Create a .tscn with the chosen root type and open it (REQ-C-01). Refuses to
+## overwrite an existing scene; the new scene is written to disk (so it reloads
+## clean and is import-registered) then opened as the current tab.
+func _op_scene_create(params: Dictionary) -> Dictionary:
+	var res_path := _scene_res_path(str(params.get("scene_path", "")))
+	if res_path == "":
+		return _err("path_escape", "scene_path is not a valid in-project res:// path.", [
+			"Pass a res:// path with no '..' segments.",
+		])
+	if FileAccess.file_exists(res_path):
+		return _err("scene_exists", "A scene already exists at %s." % res_path, [
+			"Choose a different scene_path, or open the existing scene with open_scene.",
+		])
+	var type := str(params.get("root_node_type", "Node"))
+	if type == "":
+		type = "Node"
+	if not ClassDB.class_exists(type) or not ClassDB.can_instantiate(type) or not ClassDB.is_parent_class(type, "Node"):
+		return _err("invalid_root_type", "root_node_type '%s' is not an instantiable Node class." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, Node3D, or Control.",
+		])
+	var root := ClassDB.instantiate(type) as Node
+	if root == null:
+		return _err("invalid_root_type", "Could not instantiate root_node_type '%s'." % type, [
+			"Use a concrete Node subclass such as Node, Node2D, Node3D, or Control.",
+		])
+	root.name = type
+	var dir_path := res_path.get_base_dir()
+	if dir_path != "" and not DirAccess.dir_exists_absolute(dir_path):
+		DirAccess.make_dir_recursive_absolute(dir_path)
+	var packed := PackedScene.new()
+	var pack_err := packed.pack(root)
+	if pack_err != OK:
+		root.free()
+		return _err("save_failed", "Failed to pack the new scene (error %d)." % pack_err, [
+			"Retry, or report this if it persists.",
+		])
+	var save_err := ResourceSaver.save(packed, res_path)
+	root.free()
+	if save_err != OK:
+		return _err("save_failed", "Failed to write %s (error %d)." % [res_path, save_err], [
+			"Check that the target directory is writable.",
+		])
+	EditorInterface.get_resource_filesystem().update_file(res_path)
+	EditorInterface.open_scene_from_path(res_path)
+	return {"result": {"scene_path": res_path, "root_node_type": type, "created": true}}
 
 
 func _addon_version() -> String:

@@ -9,6 +9,7 @@ import { registerAll, type ToolDescriptor } from "./registry.js";
 import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
+import { createSceneTools } from "./tools/scene.js";
 
 const SERVER_NAME = "godot-mcp";
 /** Kept in lockstep with package.json - asserted by test/unit/server.test.ts. */
@@ -31,6 +32,7 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
       bundledAddonDir: resolveBundledAddonDir(),
     }),
     ...createProjectTools({ bridge: deps.bridge }),
+    ...createSceneTools({ bridge: deps.bridge }),
   ];
 }
 
