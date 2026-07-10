@@ -306,3 +306,73 @@ describe("close_scene", () => {
     expect(result.content[0]!.text).toContain("unsaved changes");
   });
 });
+
+describe("get_scene_tree", () => {
+  const TREE = {
+    name: "Root",
+    type: "Node2D",
+    path: ".",
+    script: null,
+    instance: null,
+    children: [
+      {
+        name: "Scripted",
+        type: "Node2D",
+        path: "Scripted",
+        script: "res://scripts/print_marker.gd",
+        instance: null,
+        children: [],
+      },
+      {
+        name: "SubInstance",
+        type: "Node2D",
+        path: "SubInstance",
+        script: null,
+        instance: "res://mcp_fixtures/sub.tscn",
+        children: [],
+      },
+    ],
+  };
+
+  it("returns the validated nested tree with script/instance markers", async () => {
+    const bridge = await connectedBridge({
+      "scene/get_tree": () => ({ scene_path: "res://main.tscn", tree: TREE }),
+    });
+    const result = await callScene(bridge, "get_scene_tree");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ scene_path: "res://main.tscn", tree: TREE });
+  });
+
+  it("accepts a null scene_path (never-saved scene)", async () => {
+    const bridge = await connectedBridge({
+      "scene/get_tree": () => ({ scene_path: null, tree: { ...TREE, children: [] } }),
+    });
+    const result = await callScene(bridge, "get_scene_tree");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ scene_path: null });
+  });
+
+  it("rejects a malformed payload (child missing script field) as a guided error", async () => {
+    const badChild = { name: "X", type: "Node", path: "X", instance: null, children: [] };
+    const bridge = await connectedBridge({
+      "scene/get_tree": () => ({ scene_path: null, tree: { ...TREE, children: [badChild] } }),
+    });
+    const result = await callScene(bridge, "get_scene_tree");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed scene/get_tree payload");
+  });
+
+  it("surfaces the addon's no_current_scene error with its guidance", async () => {
+    const bridge = await connectedBridge({
+      "scene/get_tree": () =>
+        errorOutcome({
+          code: "no_current_scene",
+          message: "There is no open scene to read.",
+          possibleSolutions: ["Open or create a scene first with open_scene or create_scene."],
+        }),
+    });
+    const result = await callScene(bridge, "get_scene_tree");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("no open scene");
+  });
+});

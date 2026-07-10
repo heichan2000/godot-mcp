@@ -77,6 +77,31 @@ const CloseSceneSchema = z
   })
   .catchall(z.unknown());
 
+export interface SceneTreeNode {
+  name: string;
+  type: string;
+  path: string;
+  script: string | null;
+  instance: string | null;
+  children: SceneTreeNode[];
+}
+
+/** Recursive node shape for scene/get_tree — z.lazy because children nest. */
+const SceneTreeNodeSchema: z.ZodType<SceneTreeNode> = z.lazy(() =>
+  z.object({
+    name: z.string(),
+    type: z.string(),
+    path: z.string(),
+    script: z.string().nullable(),
+    instance: z.string().nullable(),
+    children: z.array(SceneTreeNodeSchema),
+  }),
+);
+
+const SceneTreeSchema = z
+  .object({ scene_path: z.string().nullable(), tree: SceneTreeNodeSchema })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -244,5 +269,20 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene, openScene, getOpenScenes, saveScene, closeScene];
+  const getSceneTree: ToolDescriptor = {
+    name: "get_scene_tree",
+    description:
+      "Read the current edited scene's live node tree (unsaved state included): each node's type, path, attached script, and instanced-scene marker.",
+    inputSchema: {},
+    handler: async () => {
+      try {
+        const outcome = await requestValidated(deps.bridge, "scene/get_tree", {}, SceneTreeSchema);
+        return successResult("Scene tree", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [createScene, openScene, getOpenScenes, saveScene, closeScene, getSceneTree];
 }

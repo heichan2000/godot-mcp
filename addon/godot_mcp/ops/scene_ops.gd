@@ -162,3 +162,41 @@ func _op_scene_close(params: Dictionary) -> Dictionary:
 	server._dirty_scenes.erase(target)
 	var current := _current_scene_path()
 	return {"result": {"scene_path": target, "closed": true, "current": current if current != "" else null}}
+
+
+## Live edited-scene tree readback (REQ-C-10): 1.0-parity name/type/path plus
+## script + instance markers, read from the LIVE tree so unsaved edits show.
+## Instanced children are walked too (their root carries the instance marker).
+func _op_scene_get_tree() -> Dictionary:
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err("no_current_scene", "There is no open scene to read.", [
+			"Open or create a scene first with open_scene or create_scene.",
+		])
+	var current := _current_scene_path()
+	var current_value: Variant = current if current != "" else null
+	return {"result": {"scene_path": current_value, "tree": _tree_node(root, root)}}
+
+
+## One tree node: same {name,type,path,children} 1.0 emitted, plus
+## script (resource_path of the attached script, null when none/built-in) and
+## instance (scene_file_path for a non-root instanced child, null otherwise).
+func _tree_node(root: Node, node: Node) -> Dictionary:
+	var children: Array = []
+	for child in node.get_children():
+		children.append(_tree_node(root, child))
+	var script_value: Variant = null
+	var attached: Script = node.get_script() as Script
+	if attached != null and attached.resource_path != "":
+		script_value = attached.resource_path
+	var instance_value: Variant = null
+	if node != root and node.scene_file_path != "":
+		instance_value = node.scene_file_path
+	return {
+		"name": (node.name as String),
+		"type": node.get_class(),
+		"path": str(root.get_path_to(node)),
+		"script": script_value,
+		"instance": instance_value,
+		"children": children,
+	}

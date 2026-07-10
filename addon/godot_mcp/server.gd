@@ -172,6 +172,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _scene_ops._op_scene_save(params)
 		"scene/close":
 			return _scene_ops._op_scene_close(params)
+		"scene/get_tree":
+			return _scene_ops._op_scene_get_tree()
 		"node/add":
 			return _node_ops._op_node_add(params)
 		"edit/undo":
