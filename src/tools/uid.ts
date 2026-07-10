@@ -18,6 +18,14 @@ export interface UidToolsDeps {
 
 const UidLookupSchema = z.object({ path: z.string(), uid: z.string() }).catchall(z.unknown());
 
+const UpdateUidsSchema = z
+  .object({
+    touched: z.array(z.string()),
+    already_had_uid: z.array(z.string()),
+    failed: z.array(z.object({ path: z.string(), reason: z.string() })),
+  })
+  .catchall(z.unknown());
+
 /** The UID tools at 1.0 parity (REQ-B-08/B-09), reimplemented as bridge ops (#71). */
 export function createUidTools(deps: UidToolsDeps): ToolDescriptor[] {
   const getUid: ToolDescriptor = {
@@ -49,5 +57,26 @@ export function createUidTools(deps: UidToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [getUid];
+  const updateProjectUids: ToolDescriptor = {
+    name: "update_project_uids",
+    description:
+      "Resave every .tscn/.tres lacking a UID inside the editor so all resources carry uid:// IDs (Godot >= 4.4); reports touched, already-had, and failed paths.",
+    inputSchema: {},
+    minGodotVersion: MIN_UID_GODOT_VERSION,
+    handler: async () => {
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "uid/update_project",
+          {},
+          UpdateUidsSchema,
+        );
+        return successResult("Updated project UIDs", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [getUid, updateProjectUids];
 }

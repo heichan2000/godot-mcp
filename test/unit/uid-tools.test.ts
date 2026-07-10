@@ -128,3 +128,42 @@ describe("get_uid", () => {
     expect(result.content[0]!.text).toContain("not connected");
   });
 });
+
+describe("update_project_uids", () => {
+  it("declares the 1.0 version floor as descriptor metadata", () => {
+    const tools = createUidTools({ bridge: null as never });
+    const update = tools.find((tool) => tool.name === "update_project_uids");
+    expect(update?.minGodotVersion).toBe(MIN_UID_GODOT_VERSION);
+  });
+
+  it("forwards uid/update_project with no params and returns the parity lists", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const { bridge } = await connectedPeer({
+      "uid/update_project": (params) => {
+        seen = params;
+        return {
+          touched: ["res://scenes/meshes.tscn"],
+          already_had_uid: ["res://scenes/other.tscn"],
+          failed: [{ path: "res://broken.tres", reason: "failed to load" }],
+        };
+      },
+    });
+    const result = await callUid(bridge, "update_project_uids");
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({});
+    expect(result.structuredContent).toMatchObject({
+      touched: ["res://scenes/meshes.tscn"],
+      already_had_uid: ["res://scenes/other.tscn"],
+      failed: [{ path: "res://broken.tres", reason: "failed to load" }],
+    });
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "uid/update_project": () => ({ touched: "not-an-array" }),
+    });
+    const result = await callUid(bridge, "update_project_uids");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+});
