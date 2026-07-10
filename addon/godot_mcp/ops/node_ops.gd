@@ -40,7 +40,12 @@ func _op_node_add(params: Dictionary) -> Dictionary:
 	node.name = requested_name if requested_name != "" else type
 	var undo := EditorInterface.get_editor_undo_redo()
 	undo.create_action("Add %s" % node.name, UndoRedo.MERGE_DISABLE, scene_root)
-	undo.add_do_method(parent, "add_child", node)
+	# force_readable_name=true (real-editor bug found in #70's integration run):
+	# Node.add_child's default (false) resolves a sibling-name collision with an
+	# internal generated name like "@Node2D@18502" instead of a readable
+	# auto-suffix like "Fresh2". An agent (or a human reading get_scene_tree)
+	# needs the readable form to keep addressing the node by name.
+	undo.add_do_method(parent, "add_child", node, true)
 	undo.add_do_method(node, "set_owner", scene_root)
 	undo.add_do_reference(node)
 	undo.add_undo_method(parent, "remove_child", node)
