@@ -45,7 +45,9 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
 /** Builds the MCP server and registers every tool. Pure wiring; never touches the network itself. */
 export function createServer(deps: ServerDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  registerAll(server, buildToolInventory(deps));
+  registerAll(server, buildToolInventory(deps), {
+    engineVersion: () => deps.bridge.status().hello?.godot_version,
+  });
   return server;
 }
 
