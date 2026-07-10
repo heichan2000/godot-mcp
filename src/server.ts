@@ -12,6 +12,7 @@ import { createNodeTools } from "./tools/node.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
 import { createSceneTools } from "./tools/scene.js";
+import { createUidTools } from "./tools/uid.js";
 
 const SERVER_NAME = "godot-mcp";
 /** Kept in lockstep with package.json - asserted by test/unit/server.test.ts. */
@@ -36,6 +37,7 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
       bundledAddonDir: resolveBundledAddonDir(),
     }),
     ...createProjectTools({ bridge: deps.bridge }),
+    ...createUidTools({ bridge: deps.bridge }),
     ...createSceneTools({ bridge: deps.bridge }),
     ...createNodeTools({ bridge: deps.bridge }),
     ...createDiagnosticsTools({ bridge: deps.bridge, lspPort: deps.lspPort ?? DEFAULT_LSP_PORT }),
@@ -45,7 +47,9 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
 /** Builds the MCP server and registers every tool. Pure wiring; never touches the network itself. */
 export function createServer(deps: ServerDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  registerAll(server, buildToolInventory(deps));
+  registerAll(server, buildToolInventory(deps), {
+    engineVersion: () => deps.bridge.status().hello?.godot_version,
+  });
   return server;
 }
 

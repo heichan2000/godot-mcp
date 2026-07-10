@@ -133,3 +133,84 @@ func _op_import_assets(params: Dictionary) -> Dictionary:
 	for res_path in paths:
 		reimported.append(res_path)
 	return {"scan_started": false, "reimported": reimported}
+
+
+## Resource UID lookup (REQ-B-08): the uid:// text for a res:// path, read
+## from the editor's UID registry. A text resource authored without a uid=
+## header has no registered UID until update_project_uids resaves it - that
+## case is a guided no_uid error, exactly 1.0's contract.
+func _op_get_uid(params: Dictionary) -> Dictionary:
+	var res_path := str(params.get("path", ""))
+	if not FileAccess.file_exists(res_path):
+		return {"error": {
+			"code": "file_not_found",
+			"message": "No file exists at %s." % res_path,
+			"possibleSolutions": [
+				"Check the path with list_resources - it must name an existing res:// file.",
+			],
+		}}
+	var uid_id := ResourceLoader.get_resource_uid(res_path)
+	if uid_id == ResourceUID.INVALID_ID:
+		return {"error": {
+			"code": "no_uid",
+			"message": "No UID is assigned to the resource at %s yet." % res_path,
+			"possibleSolutions": [
+				"Run update_project_uids to resave UID-less resources, then retry.",
+			],
+		}}
+	return {"result": {"path": res_path, "uid": ResourceUID.id_to_text(uid_id)}}
+
+
+## Editor-native UID refresh (REQ-B-09): every text scene/resource
+## (.tscn/.tres) with no registered UID is loaded and resaved INSIDE the
+## editor - unlike 1.0's headless path, an editor-process ResourceSaver.save
+## embeds a fresh uid= into the text header. update_file() then feeds each
+## rewrite into the editor's UID registry so the very next uid/get sees it.
+## Files already carrying a UID are never rewritten (no diff churn). Note:
+## the resave works from the on-disk copy - unsaved editor changes to a
+## UID-less scene are not captured (and per-file failures never block the
+## rest of the walk; they land in `failed`).
+func _op_update_project_uids() -> Dictionary:
+	var candidates: Array = []
+	_collect_uid_candidates(EditorInterface.get_resource_filesystem().get_filesystem(), candidates)
+	var fs := EditorInterface.get_resource_filesystem()
+	var touched: Array = []
+	var already_had_uid: Array = []
+	var failed: Array = []
+	for res_path in candidates:
+		if ResourceLoader.get_resource_uid(res_path) != ResourceUID.INVALID_ID:
+			already_had_uid.append(res_path)
+			continue
+		var res: Resource = ResourceLoader.load(res_path)
+		if res == null:
+			failed.append({"path": res_path, "reason": "failed to load"})
+			continue
+		var err := ResourceSaver.save(res, res_path)
+		if err != OK:
+			failed.append({"path": res_path, "reason": "ResourceSaver.save failed (error %d)" % err})
+			continue
+		fs.update_file(res_path)
+		if ResourceLoader.get_resource_uid(res_path) == ResourceUID.INVALID_ID:
+			failed.append({"path": res_path, "reason": "resave did not register a UID"})
+			continue
+		touched.append(res_path)
+	return {"result": {
+		"touched": touched,
+		"already_had_uid": already_had_uid,
+		"failed": failed,
+	}}
+
+
+## Collects every .tscn/.tres res:// path in the editor's resource
+## filesystem tree (the REQ-B-09 scope - scripts get .uid sidecars from the
+## editor's own scan and are not managed here).
+func _collect_uid_candidates(dir: EditorFileSystemDirectory, out: Array) -> void:
+	if dir == null:
+		return
+	for i in dir.get_file_count():
+		var res_path := dir.get_file_path(i)
+		var ext := res_path.get_extension().to_lower()
+		if ext == "tscn" or ext == "tres":
+			out.append(res_path)
+	for i in dir.get_subdir_count():
+		_collect_uid_candidates(dir.get_subdir(i), out)
