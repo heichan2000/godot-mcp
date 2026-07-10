@@ -1,44 +1,11 @@
 import { z } from "zod";
-import type { ErrorResponse } from "../errors.js";
-import {
-  assertInsideRoot,
-  containResPath,
-  PathContainmentError,
-  pathContainmentErrorResponse,
-} from "../godot/paths.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgePort } from "./bridge.js";
-import { bridgeErrorToResponse, requestValidated } from "./bridge.js";
+import { bridgeErrorToResponse, requestValidated, resolveProjectPath } from "./bridge.js";
 import { successResult } from "./result.js";
 
 export interface SceneToolsDeps {
   bridge: BridgePort;
-}
-
-/**
- * Contains a caller scene path (REQ-M-01) before it crosses the bridge:
- * structural res:// guard (foreign scheme / absolute / `..` escape) always,
- * plus a symlink-safe realpath check against the connected project root when an
- * editor is attached (its project_path is a real local dir — same machine,
- * loopback bridge). Returns the canonical res:// path to forward, or a
- * structured containment error to return as-is. When disconnected there is no
- * root to realpath and the op will not run anyway; the structural guard still
- * blocks escapes and the bridge request surfaces the not-connected error.
- */
-function resolveScenePath(
-  bridge: BridgePort,
-  scenePath: string,
-): { resPath: string } | { error: ErrorResponse } {
-  try {
-    const { resPath, relative } = containResPath(scenePath);
-    const projectRoot = bridge.status().hello?.project_path;
-    if (projectRoot) assertInsideRoot(projectRoot, relative);
-    return { resPath };
-  } catch (error) {
-    if (error instanceof PathContainmentError)
-      return { error: pathContainmentErrorResponse(error) };
-    throw error;
-  }
 }
 
 const CreateSceneSchema = z
@@ -125,7 +92,7 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
         scene_path: string;
         root_node_type?: string;
       };
-      const contained = resolveScenePath(deps.bridge, scene_path);
+      const contained = resolveProjectPath(deps.bridge, scene_path);
       if ("error" in contained) return contained.error;
       try {
         const outcome = await requestValidated(
@@ -153,7 +120,7 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
     handler: async (args) => {
       const { scene_path } = args as { scene_path: string };
-      const contained = resolveScenePath(deps.bridge, scene_path);
+      const contained = resolveProjectPath(deps.bridge, scene_path);
       if ("error" in contained) return contained.error;
       try {
         const outcome = await requestValidated(
@@ -214,12 +181,12 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
       };
       const params: Record<string, unknown> = { all: all ?? false };
       if (scene_path !== undefined) {
-        const contained = resolveScenePath(deps.bridge, scene_path);
+        const contained = resolveProjectPath(deps.bridge, scene_path);
         if ("error" in contained) return contained.error;
         params.scene_path = contained.resPath;
       }
       if (new_path !== undefined) {
-        const contained = resolveScenePath(deps.bridge, new_path);
+        const contained = resolveProjectPath(deps.bridge, new_path);
         if ("error" in contained) return contained.error;
         params.new_path = contained.resPath;
       }
@@ -251,7 +218,7 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
       const { scene_path, discard } = args as { scene_path?: string; discard?: boolean };
       const params: Record<string, unknown> = { discard: discard ?? false };
       if (scene_path !== undefined) {
-        const contained = resolveScenePath(deps.bridge, scene_path);
+        const contained = resolveProjectPath(deps.bridge, scene_path);
         if ("error" in contained) return contained.error;
         params.scene_path = contained.resPath;
       }

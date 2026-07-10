@@ -8,6 +8,8 @@ export const DEFAULT_OUTPUT_BUFFER_LINES = 1000;
 export const DEFAULT_BRIDGE_PORT = 6510;
 /** Default per-op bridge timeout (REQ-A-11 floor; progress-frame extension arrives in #75). */
 export const DEFAULT_BRIDGE_TIMEOUT_MS = 30_000;
+/** Default GDScript language-server port (Editor Settings → Network → Language Server). */
+export const DEFAULT_LSP_PORT = 6005;
 
 const ConfigSchema = z.object({
   /** Explicit path to the Godot executable, as configured by the user. Reserved for future tools; scaffolding (create_project) writes files only and never execs Godot (REQ-A-01). */
@@ -20,6 +22,8 @@ const ConfigSchema = z.object({
   bridgePort: z.number().int().min(1).max(65_535),
   /** Per-request bridge timeout in ms (BRIDGE_TIMEOUT_MS). */
   bridgeTimeoutMs: z.number().int().positive(),
+  /** GDScript language-server port (GODOT_MCP_LSP_PORT) — get_script_errors' diagnostics source. */
+  lspPort: z.number().int().min(1).max(65_535),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -74,6 +78,18 @@ function readBridgeTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
+ * Reads GODOT_MCP_LSP_PORT as a valid TCP port, falling back to
+ * DEFAULT_LSP_PORT on unset/garbage/out-of-range values.
+ */
+function readLspPort(env: NodeJS.ProcessEnv): number {
+  const value = env.GODOT_MCP_LSP_PORT?.trim();
+  if (!value) return DEFAULT_LSP_PORT;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) return DEFAULT_LSP_PORT;
+  return parsed;
+}
+
+/**
  * Loads typed, validated server configuration from environment variables.
  * Pass a custom `env` (e.g. in tests) instead of relying on the process default.
  */
@@ -84,5 +100,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outputBufferLines: readOutputBufferLines(env),
     bridgePort: readBridgePort(env),
     bridgeTimeoutMs: readBridgeTimeoutMs(env),
+    lspPort: readLspPort(env),
   });
 }

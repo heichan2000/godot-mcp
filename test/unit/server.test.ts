@@ -46,6 +46,7 @@ describe("server wiring", () => {
       "close_scene",
       "get_scene_tree",
       "add_node",
+      "get_script_errors",
     ]);
   });
 

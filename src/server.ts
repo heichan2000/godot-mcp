@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { BridgeConnection } from "./bridge/connection.js";
-import { loadConfig } from "./config.js";
+import { DEFAULT_LSP_PORT, loadConfig } from "./config.js";
 import { registerAll, type ToolDescriptor } from "./registry.js";
 import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
+import { createDiagnosticsTools } from "./tools/diagnostics.js";
 import { createNodeTools } from "./tools/node.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
@@ -18,6 +19,8 @@ export const SERVER_VERSION = "2.0.0-alpha.0";
 
 export interface ServerDeps {
   bridge: BridgePort;
+  /** GDScript language-server port; defaults to DEFAULT_LSP_PORT for stub callers (lint/tests). */
+  lspPort?: number;
 }
 
 /**
@@ -35,6 +38,7 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
     ...createProjectTools({ bridge: deps.bridge }),
     ...createSceneTools({ bridge: deps.bridge }),
     ...createNodeTools({ bridge: deps.bridge }),
+    ...createDiagnosticsTools({ bridge: deps.bridge, lspPort: deps.lspPort ?? DEFAULT_LSP_PORT }),
   ];
 }
 
@@ -93,7 +97,7 @@ export async function main(): Promise<void> {
   });
   bridge.start();
 
-  const server = createServer({ bridge });
+  const server = createServer({ bridge, lspPort: config.lspPort });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
