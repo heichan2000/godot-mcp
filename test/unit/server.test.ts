@@ -39,6 +39,7 @@ describe("server wiring", () => {
       "get_project_info",
       "list_resources",
       "import_assets",
+      "get_uid",
       "create_scene",
       "open_scene",
       "get_open_scenes",

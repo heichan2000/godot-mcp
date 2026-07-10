@@ -133,3 +133,29 @@ func _op_import_assets(params: Dictionary) -> Dictionary:
 	for res_path in paths:
 		reimported.append(res_path)
 	return {"scan_started": false, "reimported": reimported}
+
+
+## Resource UID lookup (REQ-B-08): the uid:// text for a res:// path, read
+## from the editor's UID registry. A text resource authored without a uid=
+## header has no registered UID until update_project_uids resaves it - that
+## case is a guided no_uid error, exactly 1.0's contract.
+func _op_get_uid(params: Dictionary) -> Dictionary:
+	var res_path := str(params.get("path", ""))
+	if not FileAccess.file_exists(res_path):
+		return {"error": {
+			"code": "file_not_found",
+			"message": "No file exists at %s." % res_path,
+			"possibleSolutions": [
+				"Check the path with list_resources - it must name an existing res:// file.",
+			],
+		}}
+	var uid_id := ResourceLoader.get_resource_uid(res_path)
+	if uid_id == ResourceUID.INVALID_ID:
+		return {"error": {
+			"code": "no_uid",
+			"message": "No UID is assigned to the resource at %s yet." % res_path,
+			"possibleSolutions": [
+				"Run update_project_uids to resave UID-less resources, then retry.",
+			],
+		}}
+	return {"result": {"path": res_path, "uid": ResourceUID.id_to_text(uid_id)}}

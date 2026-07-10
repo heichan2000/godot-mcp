@@ -160,6 +160,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return {"result": _project_ops._op_list_resources(params)}
 		"assets/import":
 			return {"result": _project_ops._op_import_assets(params)}
+		"uid/get":
+			return _project_ops._op_get_uid(params)
 		"scene/create":
 			return _scene_ops._op_scene_create(params)
 		"scene/open":
