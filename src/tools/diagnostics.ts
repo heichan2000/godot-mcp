@@ -73,7 +73,8 @@ export function createDiagnosticsTools(deps: DiagnosticsToolsDeps): ToolDescript
       const projectRoot = deps.bridge.status().hello?.project_path;
       if (!projectRoot) {
         return createErrorResponse({
-          message: "No editor is connected - script diagnostics need the running editor's language server.",
+          message:
+            "No editor is connected - script diagnostics need the running editor's language server.",
           possibleSolutions: EDITOR_NOT_CONNECTED_SOLUTIONS,
         });
       }

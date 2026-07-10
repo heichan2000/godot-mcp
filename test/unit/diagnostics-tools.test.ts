@@ -32,7 +32,10 @@ function tempProject(): string {
 type Handlers = NonNullable<Parameters<typeof FakeAddonPeer.start>[0]>["handlers"];
 
 async function connectedBridge(handlers: Handlers, projectPath: string): Promise<BridgeConnection> {
-  const peer = await FakeAddonPeer.start({ handlers, helloOverrides: { project_path: projectPath } });
+  const peer = await FakeAddonPeer.start({
+    handlers,
+    helloOverrides: { project_path: projectPath },
+  });
   cleanups.push(() => peer.close());
   const bridge = new BridgeConnection({
     url: peer.url,
