@@ -12,6 +12,8 @@ export interface FakeLspOptions {
   diagnostics?: Record<string, unknown[]>;
   /** Never respond to didOpen — drives the client's per-script timeout. */
   silentOnDidOpen?: boolean;
+  /** Destroy the socket upon didOpen — drives the client's fail-fast path. */
+  destroyOnDidOpen?: boolean;
   /** Split every outgoing frame across two socket writes (framing test). */
   splitWrites?: boolean;
 }
@@ -77,6 +79,10 @@ export class FakeLspServer {
   private handle(socket: Socket, message: JsonRpcMessage): void {
     if (message.method === "initialize") {
       this.send(socket, { jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+      return;
+    }
+    if (message.method === "textDocument/didOpen" && this.options.destroyOnDidOpen) {
+      socket.destroy();
       return;
     }
     if (message.method === "textDocument/didOpen" && !this.options.silentOnDidOpen) {

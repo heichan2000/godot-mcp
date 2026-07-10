@@ -114,6 +114,7 @@ class LspSession {
   private diagnosticsWaiter: {
     absPath: string;
     resolve: (diagnostics: WireDiagnostic[]) => void;
+    reject: (error: Error) => void;
   } | null = null;
 
   constructor(private readonly socket: Socket) {
@@ -139,7 +140,14 @@ class LspSession {
   private failAll(error: Error): void {
     for (const waiter of this.awaitingReplies.values()) waiter.reject(error);
     this.awaitingReplies.clear();
-    // A diagnostics waiter times out on its own timer; nothing to do here.
+    // Fail a pending diagnostics waiter fast too — a dead connection can
+    // never deliver publishDiagnostics, so waiting out timeoutMs just delays
+    // the same guided error. Its reject wrapper clears the per-script timer.
+    if (this.diagnosticsWaiter) {
+      const waiter = this.diagnosticsWaiter;
+      this.diagnosticsWaiter = null;
+      waiter.reject(error);
+    }
   }
 
   private receive(chunk: Buffer): void {
@@ -253,6 +261,10 @@ class LspSession {
         resolve: (diagnostics) => {
           clearTimeout(timer);
           resolve(diagnostics);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
         },
       };
     });

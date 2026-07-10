@@ -33,6 +33,7 @@ describe("checkScriptsViaLsp", () => {
           },
           { range: { start: { line: 0, character: 0 } }, severity: 2, message: "Unused variable" },
           { range: { start: { line: 9, character: 0 } }, severity: 3, message: "hint - dropped" },
+          { range: { start: { line: 5, character: 0 } }, message: "no severity - error" },
         ],
       },
     });
@@ -50,6 +51,12 @@ describe("checkScriptsViaLsp", () => {
         severity: "error",
       },
       { file: "res://scripts/broken.gd", line: 1, message: "Unused variable", severity: "warning" },
+      {
+        file: "res://scripts/broken.gd",
+        line: 6,
+        message: "no severity - error",
+        severity: "error",
+      },
     ]);
   });
 
@@ -114,5 +121,19 @@ describe("checkScriptsViaLsp", () => {
         timeoutMs: 300,
       }),
     ).rejects.toThrowError(/slow\.gd/);
+  });
+
+  it("fails fast with a guided LspError when the connection dies mid-wait", async () => {
+    const server = await fakeLsp({ destroyOnDidOpen: true });
+    // A generous timeout the client must NOT wait out: vitest's default 5s
+    // test timeout enforces that the rejection arrives promptly.
+    await expect(
+      checkScriptsViaLsp({
+        port: server.port,
+        projectRoot: ROOT,
+        scripts: [script("doomed.gd")],
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrowError(LspError);
   });
 });
