@@ -101,8 +101,14 @@ export interface EditorHandle {
  * xvfb-run (see .github/workflows/ci.yml); locally this opens a visible
  * editor window unless GODOT_MCP_TEST_HEADLESS=1 adds --headless.
  */
-export function launchEditor(projectDir: string): EditorHandle {
+export function launchEditor(projectDir: string, options: { lspPort?: number } = {}): EditorHandle {
   const args = ["--editor", "--path", projectDir];
+  if (options.lspPort !== undefined) {
+    // Godot >= 4.3: overrides the network/language_server/remote_port editor
+    // setting for THIS instance, so a developer's own open editor (already
+    // holding the default 6005) can never serve this test's diagnostics.
+    args.push("--lsp-port", String(options.lspPort));
+  }
   if (process.env.GODOT_MCP_TEST_HEADLESS === "1") {
     args.unshift("--headless");
   }

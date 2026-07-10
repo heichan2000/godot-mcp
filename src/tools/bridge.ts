@@ -1,11 +1,17 @@
 import { z } from "zod";
-import { createErrorResponse } from "../errors.js";
+import { createErrorResponse, type ErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgeStatus } from "../bridge/connection.js";
 import { BridgeOpError, BridgeTimeoutError, BridgeUnavailableError } from "../bridge/connection.js";
 import type { TrafficEntry } from "../bridge/traffic-log.js";
 import { TRAFFIC_LOG_CAPACITY } from "../bridge/traffic-log.js";
 import { SystemStatusSchema, type SystemStatus } from "../bridge/protocol.js";
+import {
+  assertInsideRoot,
+  containResPath,
+  PathContainmentError,
+  pathContainmentErrorResponse,
+} from "../godot/paths.js";
 import { successResult } from "./result.js";
 
 /** The narrow slice of BridgeConnection tools depend on (fake-able in tests). */
@@ -32,6 +38,30 @@ export const EDITOR_NOT_CONNECTED_SOLUTIONS: string[] = [
   "Check bridge_status for the connection state and last disconnect reason the server sees.",
   "Need headless (no-editor) workflows? Use @cradial/godot-mcp@1.x - the 1.x line keeps the CLI-based tools.",
 ];
+
+/**
+ * Contains a caller-supplied project path (REQ-M-01) before it crosses the
+ * bridge or reaches the filesystem: structural res:// guard (foreign scheme /
+ * absolute / `..` escape) always, plus a symlink-safe realpath check against
+ * the connected project root when an editor is attached. Returns the canonical
+ * res:// path to forward, or a structured containment error to return as-is.
+ * Hoisted from tools/scene.ts in #70 when diagnostics became the second user.
+ */
+export function resolveProjectPath(
+  bridge: BridgePort,
+  rawPath: string,
+): { resPath: string; relative: string } | { error: ErrorResponse } {
+  try {
+    const { resPath, relative } = containResPath(rawPath);
+    const projectRoot = bridge.status().hello?.project_path;
+    if (projectRoot) assertInsideRoot(projectRoot, relative);
+    return { resPath, relative };
+  } catch (error) {
+    if (error instanceof PathContainmentError)
+      return { error: pathContainmentErrorResponse(error) };
+    throw error;
+  }
+}
 
 /**
  * Maps a typed bridge failure onto the structured error shape (REQ-A-08).

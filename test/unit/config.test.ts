@@ -67,4 +67,12 @@ describe("loadConfig", () => {
     expect(loadConfig({ BRIDGE_TIMEOUT_MS: "5000" }).bridgeTimeoutMs).toBe(5_000);
     expect(loadConfig({ BRIDGE_TIMEOUT_MS: "-1" }).bridgeTimeoutMs).toBe(30_000);
   });
+
+  it("defaults lspPort to 6005 and honors GODOT_MCP_LSP_PORT", () => {
+    expect(loadConfig({}).lspPort).toBe(6005);
+    expect(loadConfig({ GODOT_MCP_LSP_PORT: "6010" }).lspPort).toBe(6010);
+    expect(loadConfig({ GODOT_MCP_LSP_PORT: "banana" }).lspPort).toBe(6005);
+    expect(loadConfig({ GODOT_MCP_LSP_PORT: "0" }).lspPort).toBe(6005);
+    expect(loadConfig({ GODOT_MCP_LSP_PORT: "70000" }).lspPort).toBe(6005);
+  });
 });
