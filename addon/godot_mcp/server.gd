@@ -22,6 +22,10 @@ var _start_ms := 0
 ## save clears it, get_open_scenes reports it.
 var _dirty_scenes: Dictionary = {}
 
+## Run-output ring log (REQ-E-03), owned by the debugger-capture plugin and
+## injected by plugin.gd before add_child so run ops can read it.
+var run_log: RefCounted = null
+
 const ProjectOps := preload("ops/project_ops.gd")
 const SceneOps := preload("ops/scene_ops.gd")
 const NodeOps := preload("ops/node_ops.gd")
