@@ -3,6 +3,7 @@ import type { ToolDescriptor } from "../registry.js";
 import type { BridgePort } from "./bridge.js";
 import { bridgeErrorToResponse, requestValidated } from "./bridge.js";
 import { successResult } from "./result.js";
+import { createErrorResponse } from "../errors.js";
 
 export interface NodeToolsDeps {
   bridge: BridgePort;
@@ -31,6 +32,19 @@ const RemoveNodeSchema = z
 
 const DuplicateNodeSchema = z
   .object({ node_path: z.string(), name: z.string(), source_path: z.string() })
+  .catchall(z.unknown());
+
+const MoveNodeSchema = z
+  .object({
+    node_path: z.string(),
+    parent_path: z.string(),
+    index: z.number().int(),
+    transform_handling: z.string(),
+  })
+  .catchall(z.unknown());
+
+const RenameNodeSchema = z
+  .object({ node_path: z.string(), name: z.string(), old_path: z.string() })
   .catchall(z.unknown());
 
 export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
@@ -133,5 +147,91 @@ export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [addNode, removeNode, duplicateNode];
+  const moveNode: ToolDescriptor = {
+    name: "move_node",
+    description:
+      "Reparent and/or reorder a node in the current scene; reports its new path and how its transform was handled. The editor's Ctrl+Z reverts it.",
+    inputSchema: {
+      node_path: z
+        .string()
+        .min(1, "node_path must not be empty.")
+        .describe('Node to move, as a path relative to the scene root, e.g. "Player/Sword".'),
+      new_parent_path: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('New parent node path ("." = the scene root); omit to reorder in place.'),
+      index: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Child position under the (new) parent; omit to append at the end."),
+      keep_global_transform: z
+        .boolean()
+        .optional()
+        .describe(
+          "On reparent, keep the node's global transform (default true); false keeps its local transform.",
+        ),
+    },
+    handler: async (args) => {
+      const { node_path, new_parent_path, index, keep_global_transform } = args as {
+        node_path: string;
+        new_parent_path?: string;
+        index?: number;
+        keep_global_transform?: boolean;
+      };
+      if (new_parent_path === undefined && index === undefined) {
+        return createErrorResponse({
+          message: "A move needs a destination: pass new_parent_path and/or index.",
+          possibleSolutions: [
+            "Pass new_parent_path to reparent the node.",
+            "Pass index to reorder it under its current parent.",
+          ],
+        });
+      }
+      const params: Record<string, unknown> = { node_path };
+      if (new_parent_path !== undefined) params.new_parent_path = new_parent_path;
+      if (index !== undefined) params.index = index;
+      if (keep_global_transform !== undefined) params.keep_global_transform = keep_global_transform;
+      try {
+        const outcome = await requestValidated(deps.bridge, "node/move", params, MoveNodeSchema);
+        return successResult("Moved node", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  const renameNode: ToolDescriptor = {
+    name: "rename_node",
+    description:
+      "Rename a node in the current scene and get its new path back - every path into that subtree changes. The editor's Ctrl+Z reverts it.",
+    inputSchema: {
+      node_path: z
+        .string()
+        .min(1, "node_path must not be empty.")
+        .describe('Node to rename, as a path relative to the scene root, e.g. "Player/Sword".'),
+      new_name: z
+        .string()
+        .min(1, "new_name must not be empty.")
+        .describe("New node name; sibling collisions get a unique suffix automatically."),
+    },
+    handler: async (args) => {
+      const { node_path, new_name } = args as { node_path: string; new_name: string };
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "node/rename",
+          { node_path, new_name },
+          RenameNodeSchema,
+        );
+        return successResult("Renamed node", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [addNode, removeNode, duplicateNode, moveNode, renameNode];
 }

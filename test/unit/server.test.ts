@@ -50,6 +50,8 @@ describe("server wiring", () => {
       "add_node",
       "remove_node",
       "duplicate_node",
+      "move_node",
+      "rename_node",
       "get_script_errors",
       "run_project",
       "stop_project",

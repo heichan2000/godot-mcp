@@ -221,3 +221,127 @@ func _edit_history_step(is_undo: bool) -> Dictionary:
 	var ur := manager.get_history_undo_redo(hist_id)
 	var stepped := ur.undo() if is_undo else ur.redo()
 	return {"result": {"stepped": stepped, "undo": is_undo}}
+
+
+## node/move: reparent and/or reorder a node (REQ-C-05), UndoRedo-registered
+## (REQ-M-05). Reparenting uses Node.reparent (which preserves the global or
+## local transform per the flag); owner links are re-set in both chains as a
+## defense - reparent preserves them on supported Godot versions, and the
+## set_owner calls are no-ops when it already did. The cycle guard runs
+## before any mutation: moving a node into its own subtree would detach it
+## from the scene entirely. index is clamped to the valid range at action
+## build time (post-reparent the parent has one more child, so its build-time
+## child count is the last valid slot).
+func _op_node_move(params: Dictionary) -> Dictionary:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return _err("no_current_scene", "There is no open scene to move a node in.", [
+			"Open or create a scene first with open_scene or create_scene.",
+		])
+	var node_path := str(params.get("node_path", ""))
+	var node := _resolve_node(scene_root, node_path)
+	if node == null:
+		return _err("node_not_found", "No node exists at node_path '%s'." % node_path, [
+			"Read the tree with get_scene_tree to see valid node paths.",
+		])
+	if node == scene_root:
+		return _err("cannot_move_root", "The scene root cannot be moved.", [
+			"Move a child of the root instead.",
+		])
+	var has_new_parent := params.has("new_parent_path")
+	var has_index := params.has("index")
+	if not has_new_parent and not has_index:
+		return _err("nothing_to_do", "A move needs a destination: pass new_parent_path and/or index.", [
+			"Pass new_parent_path to reparent the node.",
+			"Pass index to reorder it under its current parent.",
+		])
+	var old_parent := node.get_parent()
+	var old_index := node.get_index()
+	var new_parent := old_parent
+	if has_new_parent:
+		var new_parent_path := str(params.get("new_parent_path", ""))
+		new_parent = _resolve_node(scene_root, new_parent_path)
+		if new_parent == null:
+			return _err("parent_not_found", "No node exists at new_parent_path '%s'." % new_parent_path, [
+				"Read the tree with get_scene_tree to see valid node paths.",
+			])
+		if new_parent == node or node.is_ancestor_of(new_parent):
+			return _err("cycle_move", "Cannot move '%s' into its own subtree." % node.name, [
+				"Pick a new_parent_path outside the node's subtree.",
+			])
+	var keep_global := bool(params.get("keep_global_transform", true))
+	var reparenting := new_parent != old_parent
+	var owned: Array = []
+	_collect_owned(node, scene_root, owned)
+	var undo := EditorInterface.get_editor_undo_redo()
+	undo.create_action("Move %s" % node.name, UndoRedo.MERGE_DISABLE, scene_root)
+	if reparenting:
+		undo.add_do_method(node, "reparent", new_parent, keep_global)
+		for owned_node in owned:
+			undo.add_do_method(owned_node, "set_owner", scene_root)
+		if has_index:
+			undo.add_do_method(new_parent, "move_child", node, clampi(int(params.get("index", 0)), 0, new_parent.get_child_count()))
+		undo.add_undo_method(node, "reparent", old_parent, keep_global)
+		undo.add_undo_method(old_parent, "move_child", node, old_index)
+		for owned_node in owned:
+			undo.add_undo_method(owned_node, "set_owner", scene_root)
+	else:
+		undo.add_do_method(old_parent, "move_child", node, clampi(int(params.get("index", 0)), 0, old_parent.get_child_count() - 1))
+		undo.add_undo_method(old_parent, "move_child", node, old_index)
+	undo.commit_action()
+	server._dirty_scenes[scene_root.scene_file_path] = true
+	var transform_handling := "unchanged"
+	if reparenting:
+		if node is Node2D or node is Node3D or node is Control:
+			transform_handling = "kept_global_transform" if keep_global else "kept_local_transform"
+		else:
+			transform_handling = "no_transform"
+	return {"result": {
+		"node_path": str(scene_root.get_path_to(node)),
+		"parent_path": str(scene_root.get_path_to(node.get_parent())),
+		"index": node.get_index(),
+		"transform_handling": transform_handling,
+	}}
+
+
+## node/rename: rename a node (REQ-C-05), UndoRedo-registered (REQ-M-05).
+## The root may be renamed (its path stays "."). Characters Godot would
+## silently sanitize out of a node name are rejected instead; a sibling
+## collision auto-suffixes, so the response reports the ACTUAL resulting
+## name and path plus the old path - every path the caller held into this
+## subtree just changed.
+func _op_node_rename(params: Dictionary) -> Dictionary:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return _err("no_current_scene", "There is no open scene to rename a node in.", [
+			"Open or create a scene first with open_scene or create_scene.",
+		])
+	var node_path := str(params.get("node_path", ""))
+	var node := _resolve_node(scene_root, node_path)
+	if node == null:
+		return _err("node_not_found", "No node exists at node_path '%s'." % node_path, [
+			"Read the tree with get_scene_tree to see valid node paths.",
+		])
+	var new_name := str(params.get("new_name", ""))
+	if new_name == "":
+		return _err("invalid_name", "new_name must not be empty.", [
+			"Pass the node's new name in new_name.",
+		])
+	for bad_char in [".", "/", ":", "@", "%", "\""]:
+		if new_name.contains(bad_char):
+			return _err("invalid_name", "new_name '%s' contains a character node names cannot hold." % new_name, [
+				"Use a name without . / : @ % or quote characters.",
+			])
+	var old_name := str(node.name)
+	var old_path := str(scene_root.get_path_to(node))
+	var undo := EditorInterface.get_editor_undo_redo()
+	undo.create_action("Rename %s to %s" % [old_name, new_name], UndoRedo.MERGE_DISABLE, scene_root)
+	undo.add_do_method(node, "set_name", new_name)
+	undo.add_undo_method(node, "set_name", old_name)
+	undo.commit_action()
+	server._dirty_scenes[scene_root.scene_file_path] = true
+	return {"result": {
+		"node_path": str(scene_root.get_path_to(node)),
+		"name": str(node.name),
+		"old_path": old_path,
+	}}

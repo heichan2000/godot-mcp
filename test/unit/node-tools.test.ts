@@ -292,3 +292,159 @@ describe("duplicate_node", () => {
     expect(result.content[0]!.text).toContain("not connected");
   });
 });
+
+describe("move_node", () => {
+  it("forwards node_path, new_parent_path, index, and keep_global_transform", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/move": (params) => {
+        seen = params;
+        return {
+          node_path: "Level/Enemies",
+          parent_path: "Level",
+          index: 0,
+          transform_handling: "kept_local_transform",
+        };
+      },
+    });
+    const result = await callNode(bridge, "move_node", {
+      node_path: "Enemies",
+      new_parent_path: "Level",
+      index: 0,
+      keep_global_transform: false,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({
+      node_path: "Enemies",
+      new_parent_path: "Level",
+      index: 0,
+      keep_global_transform: false,
+    });
+    expect(result.structuredContent).toMatchObject({
+      node_path: "Level/Enemies",
+      parent_path: "Level",
+      index: 0,
+      transform_handling: "kept_local_transform",
+    });
+  });
+
+  it("reorders with index alone, forwarding no parent", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/move": (params) => {
+        seen = params;
+        return {
+          node_path: "Enemies",
+          parent_path: ".",
+          index: 2,
+          transform_handling: "unchanged",
+        };
+      },
+    });
+    const result = await callNode(bridge, "move_node", { node_path: "Enemies", index: 2 });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ node_path: "Enemies", index: 2 });
+    expect(result.structuredContent).toMatchObject({ index: 2, transform_handling: "unchanged" });
+  });
+
+  it("rejects a move with neither new_parent_path nor index, without bridge traffic", async () => {
+    const { peer, bridge } = await connectedPeer({});
+    const result = await callNode(bridge, "move_node", { node_path: "Enemies" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("new_parent_path");
+    expect(peer.requests).toHaveLength(0);
+  });
+
+  it("surfaces the addon's cycle_move refusal as a guided error", async () => {
+    const { bridge } = await connectedPeer({
+      "node/move": () =>
+        errorOutcome({
+          code: "cycle_move",
+          message: "Cannot move 'Enemies' into its own subtree.",
+          possibleSolutions: ["Pick a new_parent_path outside the node's subtree."],
+        }),
+    });
+    const result = await callNode(bridge, "move_node", {
+      node_path: "Enemies",
+      new_parent_path: "Enemies/Slime",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("its own subtree");
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "node/move": () => ({ nope: 1 }),
+    });
+    const result = await callNode(bridge, "move_node", { node_path: "Enemies", index: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callNode(deadBridge(), "move_node", { node_path: "Enemies", index: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
+  });
+});
+
+describe("rename_node", () => {
+  it("forwards node_path and new_name, returns the new path and old path", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/rename": (params) => {
+        seen = params;
+        return { node_path: "Player/Blade", name: "Blade", old_path: "Player/Sword" };
+      },
+    });
+    const result = await callNode(bridge, "rename_node", {
+      node_path: "Player/Sword",
+      new_name: "Blade",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ node_path: "Player/Sword", new_name: "Blade" });
+    expect(result.structuredContent).toMatchObject({
+      node_path: "Player/Blade",
+      name: "Blade",
+      old_path: "Player/Sword",
+    });
+  });
+
+  it("surfaces the addon's invalid_name refusal as a guided error", async () => {
+    const { bridge } = await connectedPeer({
+      "node/rename": () =>
+        errorOutcome({
+          code: "invalid_name",
+          message: "new_name 'a/b' contains a character node names cannot hold.",
+          possibleSolutions: ["Use a name without . / : @ % or quote characters."],
+        }),
+    });
+    const result = await callNode(bridge, "rename_node", {
+      node_path: "Player",
+      new_name: "a/b",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("cannot hold");
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "node/rename": () => ({ nope: 1 }),
+    });
+    const result = await callNode(bridge, "rename_node", {
+      node_path: "Player",
+      new_name: "Hero",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callNode(deadBridge(), "rename_node", {
+      node_path: "Player",
+      new_name: "Hero",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
+  });
+});
