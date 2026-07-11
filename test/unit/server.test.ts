@@ -50,6 +50,8 @@ describe("server wiring", () => {
       "add_node",
       "get_script_errors",
       "run_project",
+      "stop_project",
+      "get_debug_output",
     ]);
   });
 

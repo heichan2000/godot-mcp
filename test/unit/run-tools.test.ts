@@ -180,3 +180,98 @@ describe("run_project", () => {
     expect(result.content[0]!.text).toContain("not connected");
   });
 });
+
+describe("stop_project", () => {
+  it("forwards run/stop and reports the stopped session", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const { bridge } = await connectedPeer({
+      "run/stop": (params) => {
+        seen = params;
+        return { was_running: true };
+      },
+    });
+    const result = await callRun(bridge, "stop_project");
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({});
+    expect(result.structuredContent).toMatchObject({ was_running: true });
+  });
+
+  it("is a structured success no-op when nothing is running (REQ-E-02)", async () => {
+    const { bridge } = await connectedPeer({
+      "run/stop": () => ({ was_running: false }),
+    });
+    const result = await callRun(bridge, "stop_project");
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ was_running: false });
+    expect(result.content[0]!.text).toContain("Nothing was running");
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "run/stop": () => ({ nope: 1 }),
+    });
+    const result = await callRun(bridge, "stop_project");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured editor-not-connected error when the bridge is down (REQ-A-04/A-10)", async () => {
+    const result = await callRun(downBridge(), "stop_project");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
+  });
+});
+
+describe("get_debug_output", () => {
+  const payload = {
+    lines: [
+      { stream: "stdout", text: "hello" },
+      { stream: "error", text: "boom (res://x.gd:3 in _ready)" },
+    ],
+    next_cursor: 7,
+    dropped_lines: 0,
+    playing: true,
+  };
+
+  it("defaults the cursor to 0 and returns lines, next_cursor, dropped_lines, playing", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const { bridge } = await connectedPeer({
+      "run/get_output": (params) => {
+        seen = params;
+        return payload;
+      },
+    });
+    const result = await callRun(bridge, "get_debug_output");
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ after: 0 });
+    expect(result.structuredContent).toMatchObject(payload);
+  });
+
+  it("forwards a given cursor as after", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const { bridge } = await connectedPeer({
+      "run/get_output": (params) => {
+        seen = params;
+        return { ...payload, lines: [], next_cursor: 7, playing: false };
+      },
+    });
+    const result = await callRun(bridge, "get_debug_output", { cursor: 7 });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ after: 7 });
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "run/get_output": () => ({ lines: "nope" }),
+    });
+    const result = await callRun(bridge, "get_debug_output");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured editor-not-connected error when the bridge is down (REQ-A-04/A-10)", async () => {
+    const result = await callRun(downBridge(), "get_debug_output");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
+  });
+});

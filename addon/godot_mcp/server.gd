@@ -193,6 +193,10 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_edit_redo()
 		"run/play":
 			return _run_ops._op_run_play(params)
+		"run/stop":
+			return _run_ops._op_run_stop()
+		"run/get_output":
+			return _run_ops._op_run_get_output(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",

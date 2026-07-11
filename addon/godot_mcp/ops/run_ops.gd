@@ -62,3 +62,27 @@ func _op_run_play(params: Dictionary) -> Dictionary:
 		"custom":
 			EditorInterface.play_custom_scene(scene_path)
 	return {"result": {"mode": mode, "scene_path": scene_path, "replaced_active": replaced}}
+
+
+## run/stop: ends the running session (REQ-E-02). Always safe: with nothing
+## playing it is a success no-op, never an error - run control must never
+## make an agent handle a failure for asking politely. The buffer is NOT
+## cleared, so the stopped session's output stays readable (REQ-E-03).
+func _op_run_stop() -> Dictionary:
+	if not EditorInterface.is_playing_scene():
+		return {"result": {"was_running": false}}
+	EditorInterface.stop_playing_scene()
+	return {"result": {"was_running": true}}
+
+
+## run/get_output: cursor-paged read of the session ring log (REQ-E-03),
+## plus the live playing flag so a tailing agent can tell "no new lines yet"
+## from "the game exited". Read-only - polling never disturbs the buffer.
+func _op_run_get_output(params: Dictionary) -> Dictionary:
+	var after := int(params.get("after", 0))
+	var playing := EditorInterface.is_playing_scene()
+	if server.run_log == null:
+		return {"result": {"lines": [], "next_cursor": after, "dropped_lines": 0, "playing": playing}}
+	var out: Dictionary = server.run_log.read_after(after)
+	out["playing"] = playing
+	return {"result": out}
