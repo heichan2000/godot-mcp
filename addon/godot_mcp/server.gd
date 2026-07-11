@@ -187,6 +187,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _scene_ops._op_scene_get_tree()
 		"node/add":
 			return _node_ops._op_node_add(params)
+		"node/remove":
+			return _node_ops._op_node_remove(params)
 		"edit/undo":
 			return _node_ops._op_edit_undo()
 		"edit/redo":

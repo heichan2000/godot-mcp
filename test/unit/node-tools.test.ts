@@ -46,6 +46,22 @@ function deadBridge(): BridgeConnection {
   return bridge;
 }
 
+/** Like connectedBridge, but also exposes the peer for request inspection. */
+async function connectedPeer(handlers: Handlers) {
+  const peer = await FakeAddonPeer.start({ handlers });
+  cleanups.push(() => peer.close());
+  const bridge = new BridgeConnection({
+    url: peer.url,
+    serverVersion: SERVER_VERSION,
+    requestTimeoutMs: 2_000,
+    reconnectDelayMs: 50,
+  });
+  bridge.start();
+  cleanups.push(() => bridge.stop());
+  await bridge.waitForState("connected", 5_000);
+  return { peer, bridge };
+}
+
 async function callNode(
   bridge: BridgeConnection,
   name: string,
@@ -139,5 +155,74 @@ describe("add_node", () => {
     const solutions = (result.structuredContent as { possibleSolutions: string[] })
       .possibleSolutions;
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+});
+
+describe("remove_node", () => {
+  const manifest = [
+    { path: "Enemies", name: "Enemies", type: "Node2D" },
+    { path: "Enemies/Slime", name: "Slime", type: "Sprite2D" },
+    { path: "Enemies/Bat", name: "Bat", type: "Sprite2D" },
+  ];
+
+  it("forwards node_path and returns the removed-subtree manifest (REQ-M-04)", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/remove": (params) => {
+        seen = params;
+        return { node_path: "Enemies", removed_subtree: manifest, removed_count: 3 };
+      },
+    });
+    const result = await callNode(bridge, "remove_node", { node_path: "Enemies" });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ node_path: "Enemies" });
+    expect(result.structuredContent).toMatchObject({
+      node_path: "Enemies",
+      removed_subtree: manifest,
+      removed_count: 3,
+    });
+  });
+
+  it("surfaces the addon's node_not_found refusal as a guided error", async () => {
+    const { bridge } = await connectedPeer({
+      "node/remove": () =>
+        errorOutcome({
+          code: "node_not_found",
+          message: "No node exists at node_path 'Ghost'.",
+          possibleSolutions: ["Read the tree with get_scene_tree to see valid node paths."],
+        }),
+    });
+    const result = await callNode(bridge, "remove_node", { node_path: "Ghost" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("No node exists at node_path");
+  });
+
+  it("surfaces the addon's cannot_remove_root refusal as a guided error", async () => {
+    const { bridge } = await connectedPeer({
+      "node/remove": () =>
+        errorOutcome({
+          code: "cannot_remove_root",
+          message: "The scene root cannot be removed.",
+          possibleSolutions: ["Remove a child of the root, or close the scene instead."],
+        }),
+    });
+    const result = await callNode(bridge, "remove_node", { node_path: "." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("scene root cannot be removed");
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "node/remove": () => ({ unexpected: true }),
+    });
+    const result = await callNode(bridge, "remove_node", { node_path: "Enemies" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callNode(deadBridge(), "remove_node", { node_path: "Enemies" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
   });
 });

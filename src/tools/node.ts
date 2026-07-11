@@ -17,6 +17,18 @@ const AddNodeSchema = z
   })
   .catchall(z.unknown());
 
+const RemovedEntrySchema = z
+  .object({ path: z.string(), name: z.string(), type: z.string() })
+  .catchall(z.unknown());
+
+const RemoveNodeSchema = z
+  .object({
+    node_path: z.string(),
+    removed_subtree: z.array(RemovedEntrySchema),
+    removed_count: z.number().int(),
+  })
+  .catchall(z.unknown());
+
 export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
   const addNode: ToolDescriptor = {
     name: "add_node",
@@ -58,5 +70,31 @@ export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [addNode];
+  const removeNode: ToolDescriptor = {
+    name: "remove_node",
+    description:
+      "Remove a node and its whole subtree from the current scene; the response manifests everything removed (names, types, paths), and the editor's Ctrl+Z restores it.",
+    inputSchema: {
+      node_path: z
+        .string()
+        .min(1, "node_path must not be empty.")
+        .describe('Node to remove, as a path relative to the scene root, e.g. "Player/Sword".'),
+    },
+    handler: async (args) => {
+      const { node_path } = args as { node_path: string };
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "node/remove",
+          { node_path },
+          RemoveNodeSchema,
+        );
+        return successResult(`Removed ${outcome.removed_count} node(s)`, { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [addNode, removeNode];
 }
