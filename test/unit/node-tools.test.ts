@@ -226,3 +226,69 @@ describe("remove_node", () => {
     expect(result.content[0]!.text).toContain("not connected");
   });
 });
+
+describe("duplicate_node", () => {
+  it("forwards node_path and new_name, returns the copy's actual path and name", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/duplicate": (params) => {
+        seen = params;
+        return { node_path: "Backup", name: "Backup", source_path: "Enemies" };
+      },
+    });
+    const result = await callNode(bridge, "duplicate_node", {
+      node_path: "Enemies",
+      new_name: "Backup",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ node_path: "Enemies", new_name: "Backup" });
+    expect(result.structuredContent).toMatchObject({
+      node_path: "Backup",
+      name: "Backup",
+      source_path: "Enemies",
+    });
+  });
+
+  it("omits new_name when the caller does (addon derives it from the source)", async () => {
+    let seen: Record<string, unknown> = {};
+    const { bridge } = await connectedPeer({
+      "node/duplicate": (params) => {
+        seen = params;
+        return { node_path: "Enemies2", name: "Enemies2", source_path: "Enemies" };
+      },
+    });
+    const result = await callNode(bridge, "duplicate_node", { node_path: "Enemies" });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toEqual({ node_path: "Enemies" });
+    expect(result.structuredContent).toMatchObject({ name: "Enemies2" });
+  });
+
+  it("surfaces the addon's cannot_duplicate_root refusal as a guided error", async () => {
+    const { bridge } = await connectedPeer({
+      "node/duplicate": () =>
+        errorOutcome({
+          code: "cannot_duplicate_root",
+          message: "The scene root cannot be duplicated.",
+          possibleSolutions: ["Duplicate a child of the root, or create a new scene."],
+        }),
+    });
+    const result = await callNode(bridge, "duplicate_node", { node_path: "." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("cannot be duplicated");
+  });
+
+  it("turns a malformed addon payload into a guided error (REQ-A-08)", async () => {
+    const { bridge } = await connectedPeer({
+      "node/duplicate": () => ({ nope: 1 }),
+    });
+    const result = await callNode(bridge, "duplicate_node", { node_path: "Enemies" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("malformed");
+  });
+
+  it("returns the structured not-connected error when no editor is attached", async () => {
+    const result = await callNode(deadBridge(), "duplicate_node", { node_path: "Enemies" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not connected");
+  });
+});

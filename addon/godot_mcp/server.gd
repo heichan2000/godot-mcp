@@ -189,6 +189,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_node_add(params)
 		"node/remove":
 			return _node_ops._op_node_remove(params)
+		"node/duplicate":
+			return _node_ops._op_node_duplicate(params)
 		"edit/undo":
 			return _node_ops._op_edit_undo()
 		"edit/redo":

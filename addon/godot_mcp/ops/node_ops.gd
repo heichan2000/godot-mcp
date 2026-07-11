@@ -137,6 +137,64 @@ func _op_node_remove(params: Dictionary) -> Dictionary:
 	}}
 
 
+## node/duplicate: copy a node and its subtree in place as a sibling right
+## after the source (REQ-C-05), UndoRedo-registered (REQ-M-05). duplicate()
+## copies structure and names but NOT ownership, so the do chain re-owns the
+## copy's counterparts of every source node the scene root owned - mapped by
+## relative path (blanket-owning every descendant would corrupt instanced
+## children's serialization). add_child(force_readable_name=true) resolves
+## name collisions with a readable suffix; the response reports the actual
+## resulting name and path.
+func _op_node_duplicate(params: Dictionary) -> Dictionary:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return _err("no_current_scene", "There is no open scene to duplicate a node in.", [
+			"Open or create a scene first with open_scene or create_scene.",
+		])
+	var node_path := str(params.get("node_path", ""))
+	var node := _resolve_node(scene_root, node_path)
+	if node == null:
+		return _err("node_not_found", "No node exists at node_path '%s'." % node_path, [
+			"Read the tree with get_scene_tree to see valid node paths.",
+		])
+	if node == scene_root:
+		return _err("cannot_duplicate_root", "The scene root cannot be duplicated.", [
+			"Duplicate a child of the root, or create a new scene with create_scene.",
+		])
+	var parent := node.get_parent()
+	var dup := node.duplicate()
+	if dup == null:
+		return _err("duplicate_failed", "Godot could not duplicate the node at '%s'." % node_path, [
+			"Check the editor Output panel for script errors on the node.",
+		])
+	var requested := str(params.get("new_name", ""))
+	dup.name = requested if requested != "" else str(node.name)
+	var owned_src: Array = []
+	_collect_owned(node, scene_root, owned_src)
+	var to_own: Array = [dup]
+	for src in owned_src:
+		if src == node:
+			continue
+		var counterpart := dup.get_node_or_null(node.get_path_to(src))
+		if counterpart != null and not to_own.has(counterpart):
+			to_own.append(counterpart)
+	var undo := EditorInterface.get_editor_undo_redo()
+	undo.create_action("Duplicate %s" % node.name, UndoRedo.MERGE_DISABLE, scene_root)
+	undo.add_do_method(parent, "add_child", dup, true)
+	undo.add_do_method(parent, "move_child", dup, node.get_index() + 1)
+	for owned_node in to_own:
+		undo.add_do_method(owned_node, "set_owner", scene_root)
+	undo.add_do_reference(dup)
+	undo.add_undo_method(parent, "remove_child", dup)
+	undo.commit_action()
+	server._dirty_scenes[scene_root.scene_file_path] = true
+	return {"result": {
+		"node_path": str(scene_root.get_path_to(dup)),
+		"name": str(dup.name),
+		"source_path": str(scene_root.get_path_to(node)),
+	}}
+
+
 ## Step the CURRENT scene's editor undo history back one action (REQ-M-05 test
 ## seam; internal op, no MCP tool). This is the very history Ctrl+Z drives.
 func _op_edit_undo() -> Dictionary:

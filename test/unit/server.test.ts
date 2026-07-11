@@ -49,6 +49,7 @@ describe("server wiring", () => {
       "get_scene_tree",
       "add_node",
       "remove_node",
+      "duplicate_node",
       "get_script_errors",
       "run_project",
       "stop_project",

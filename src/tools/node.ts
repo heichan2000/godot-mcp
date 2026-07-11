@@ -29,6 +29,10 @@ const RemoveNodeSchema = z
   })
   .catchall(z.unknown());
 
+const DuplicateNodeSchema = z
+  .object({ node_path: z.string(), name: z.string(), source_path: z.string() })
+  .catchall(z.unknown());
+
 export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
   const addNode: ToolDescriptor = {
     name: "add_node",
@@ -96,5 +100,38 @@ export function createNodeTools(deps: NodeToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [addNode, removeNode];
+  const duplicateNode: ToolDescriptor = {
+    name: "duplicate_node",
+    description:
+      "Duplicate a node and its subtree in place as a sibling copy with a unique name, optionally renamed; the editor's Ctrl+Z removes the copy.",
+    inputSchema: {
+      node_path: z
+        .string()
+        .min(1, "node_path must not be empty.")
+        .describe('Node to duplicate, as a path relative to the scene root, e.g. "Enemies".'),
+      new_name: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Name for the copy; defaults to the source name plus a unique suffix."),
+    },
+    handler: async (args) => {
+      const { node_path, new_name } = args as { node_path: string; new_name?: string };
+      const params: Record<string, unknown> = { node_path };
+      if (new_name !== undefined) params.new_name = new_name;
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "node/duplicate",
+          params,
+          DuplicateNodeSchema,
+        );
+        return successResult("Duplicated node", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [addNode, removeNode, duplicateNode];
 }
