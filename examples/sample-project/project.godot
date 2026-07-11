@@ -12,6 +12,7 @@ config_version=5
 
 config/name="godot-mcp Sample Project"
 config/features=PackedStringArray("4.3", "Forward Plus")
+run/main_scene="res://scenes/print_marker.tscn"
 
 [editor_plugins]
 

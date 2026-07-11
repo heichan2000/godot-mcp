@@ -130,7 +130,20 @@ export function launchEditor(projectDir: string, options: { lspPort?: number } =
           return;
         }
         child.once("exit", () => resolve());
-        child.kill("SIGKILL");
+        // Windows has no process-group SIGKILL propagation: terminating the
+        // editor's own handle leaves any scene it is playing (spawned via
+        // play_main_scene()/play_custom_scene()/etc.) running as an orphan,
+        // still holding file locks in the temp project dir and the shared
+        // debugger port - discovered by #72's editor-kill-mid-run test.
+        // `taskkill /T` reaps the whole tree; fall back to the plain signal
+        // (also POSIX's path, where the child does die with its parent).
+        if (process.platform === "win32" && child.pid !== undefined) {
+          execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
+            child.kill("SIGKILL");
+          });
+        } else {
+          child.kill("SIGKILL");
+        }
       }),
   };
 }

@@ -22,19 +22,26 @@ var _start_ms := 0
 ## save clears it, get_open_scenes reports it.
 var _dirty_scenes: Dictionary = {}
 
+## Run-output ring log (REQ-E-03), owned by the debugger-capture plugin and
+## injected by plugin.gd before add_child so run ops can read it.
+var run_log: RefCounted = null
+
 const ProjectOps := preload("ops/project_ops.gd")
 const SceneOps := preload("ops/scene_ops.gd")
 const NodeOps := preload("ops/node_ops.gd")
+const RunOps := preload("ops/run_ops.gd")
 
 var _project_ops: RefCounted = null
 var _scene_ops: RefCounted = null
 var _node_ops: RefCounted = null
+var _run_ops: RefCounted = null
 
 
 func _ready() -> void:
 	_project_ops = ProjectOps.new(self)
 	_scene_ops = SceneOps.new(self)
 	_node_ops = NodeOps.new(self)
+	_run_ops = RunOps.new(self)
 	_start_ms = Time.get_ticks_msec()
 	var port := _configured_port()
 	var err := _tcp.listen(port, "127.0.0.1")
@@ -184,6 +191,12 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_edit_undo()
 		"edit/redo":
 			return _node_ops._op_edit_redo()
+		"run/play":
+			return _run_ops._op_run_play(params)
+		"run/stop":
+			return _run_ops._op_run_stop()
+		"run/get_output":
+			return _run_ops._op_run_get_output(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",
