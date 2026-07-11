@@ -29,16 +29,19 @@ var run_log: RefCounted = null
 const ProjectOps := preload("ops/project_ops.gd")
 const SceneOps := preload("ops/scene_ops.gd")
 const NodeOps := preload("ops/node_ops.gd")
+const RunOps := preload("ops/run_ops.gd")
 
 var _project_ops: RefCounted = null
 var _scene_ops: RefCounted = null
 var _node_ops: RefCounted = null
+var _run_ops: RefCounted = null
 
 
 func _ready() -> void:
 	_project_ops = ProjectOps.new(self)
 	_scene_ops = SceneOps.new(self)
 	_node_ops = NodeOps.new(self)
+	_run_ops = RunOps.new(self)
 	_start_ms = Time.get_ticks_msec()
 	var port := _configured_port()
 	var err := _tcp.listen(port, "127.0.0.1")
@@ -188,6 +191,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_edit_undo()
 		"edit/redo":
 			return _node_ops._op_edit_redo()
+		"run/play":
+			return _run_ops._op_run_play(params)
 		_:
 			return {"error": {
 				"code": "unknown_method",

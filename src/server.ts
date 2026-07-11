@@ -4,13 +4,14 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { BridgeConnection } from "./bridge/connection.js";
-import { DEFAULT_LSP_PORT, loadConfig } from "./config.js";
+import { DEFAULT_LSP_PORT, DEFAULT_OUTPUT_BUFFER_LINES, loadConfig } from "./config.js";
 import { registerAll, type ToolDescriptor } from "./registry.js";
 import { createBridgeTools, type BridgePort } from "./tools/bridge.js";
 import { createDiagnosticsTools } from "./tools/diagnostics.js";
 import { createNodeTools } from "./tools/node.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
+import { createRunTools } from "./tools/run.js";
 import { createSceneTools } from "./tools/scene.js";
 import { createUidTools } from "./tools/uid.js";
 
@@ -22,6 +23,8 @@ export interface ServerDeps {
   bridge: BridgePort;
   /** GDScript language-server port; defaults to DEFAULT_LSP_PORT for stub callers (lint/tests). */
   lspPort?: number;
+  /** Run-output ring-buffer capacity (OUTPUT_BUFFER_LINES); defaults for stub callers. */
+  outputBufferLines?: number;
 }
 
 /**
@@ -41,6 +44,10 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
     ...createSceneTools({ bridge: deps.bridge }),
     ...createNodeTools({ bridge: deps.bridge }),
     ...createDiagnosticsTools({ bridge: deps.bridge, lspPort: deps.lspPort ?? DEFAULT_LSP_PORT }),
+    ...createRunTools({
+      bridge: deps.bridge,
+      outputBufferLines: deps.outputBufferLines ?? DEFAULT_OUTPUT_BUFFER_LINES,
+    }),
   ];
 }
 
@@ -101,7 +108,11 @@ export async function main(): Promise<void> {
   });
   bridge.start();
 
-  const server = createServer({ bridge, lspPort: config.lspPort });
+  const server = createServer({
+    bridge,
+    lspPort: config.lspPort,
+    outputBufferLines: config.outputBufferLines,
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
