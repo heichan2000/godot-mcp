@@ -54,6 +54,7 @@ func _op_run_play(params: Dictionary) -> Dictionary:
 		EditorInterface.stop_playing_scene()
 	if server.run_log != null:
 		server.run_log.reset(int(params.get("buffer_lines", 0)))
+	_await_filesystem_ready()
 	match mode:
 		"main":
 			EditorInterface.play_main_scene()
@@ -62,6 +63,25 @@ func _op_run_play(params: Dictionary) -> Dictionary:
 		"custom":
 			EditorInterface.play_custom_scene(scene_path)
 	return {"result": {"mode": mode, "scene_path": scene_path, "replaced_active": replaced}}
+
+
+## Godot editor quirk found via #72's real-editor integration suite: calling
+## play_*_scene() while EditorFileSystem is still running its initial scan
+## (most likely right after a fresh editor boot, before the first run_project
+## call) silently no-ops - the play request is dropped rather than queued or
+## retried, so is_playing_scene() never flips true and a tailing caller hangs
+## with zero output until its own timeout. Ops execute synchronously (one per
+## editor frame - see server.gd _drain_queue), so this is a bounded blocking
+## wait rather than an async one; 10s covers even a slow first scan while
+## staying well under callers' play timeouts.
+func _await_filesystem_ready() -> void:
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs == null:
+		return
+	var waited_ms := 0
+	while fs.is_scanning() and waited_ms < 10000:
+		OS.delay_msec(50)
+		waited_ms += 50
 
 
 ## run/stop: ends the running session (REQ-E-02). Always safe: with nothing

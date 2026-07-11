@@ -77,6 +77,17 @@ describe.runIf(hasGodot)("scene tree readback against a real editor (REQ-C-10)",
   beforeAll(async () => {
     projectDir = freshSampleProject();
     installAddon(projectDir);
+    // #72 gave the shared sample project a run/main_scene so run-control's
+    // suite can play it; that makes a freshly-opened editor auto-restore the
+    // main scene as the current edited scene (no prior editor layout to
+    // restore from), which would break this suite's "nothing is open yet"
+    // precondition below. Strip it from THIS copy only - scene-tree's own
+    // fixture scenes are unrelated to run/play and never need a main scene.
+    const projectFile = path.join(projectDir, "project.godot");
+    writeFileSync(
+      projectFile,
+      readFileSync(projectFile, "utf8").replace(/^run\/main_scene=.*\r?\n/m, ""),
+    );
     mkdirSync(path.join(projectDir, "mcp_fixtures"), { recursive: true });
     writeFileSync(path.join(projectDir, "mcp_fixtures", "sub.tscn"), SUB_SCENE);
     writeFileSync(path.join(projectDir, "mcp_fixtures", "tree_fixture.tscn"), TREE_SCENE);
