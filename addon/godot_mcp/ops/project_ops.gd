@@ -110,13 +110,14 @@ func _under_dir(res_path: String, prefix: String) -> bool:
 	return res_path == normalized or res_path.begins_with(normalized + "/")
 
 
-## Editor-native scan/reimport (REQ-J-01) — the successor to headless --import.
-## With explicit `paths`: register each file with the resource filesystem
-## (update_file) then reimport them synchronously, so a just-dropped file is a
-## usable res:// resource on return. With no paths: kick off an async
-## whole-project rescan (progress frames arrive in a later slice, #75). The
-## PRODUCT never spawns Godot (REQ-A-01) — this runs inside the live editor.
-func _op_import_assets(params: Dictionary) -> Dictionary:
+## Editor-native scan/reimport (REQ-J-01) with progress frames (REQ-A-11).
+## With explicit `paths`: register + reimport the files one at a time, emitting
+## a reimport progress frame before each so big batches keep extending the
+## client's deadline. With no paths: kick off an async whole-project rescan and
+## defer the response via ScanTask - the client's reply arrives only when the
+## editor finishes scanning. The PRODUCT never spawns Godot (REQ-A-01).
+## Returns a full outcome dict ({"result"} or {"task"}), not a bare result.
+func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
 	var fs := EditorInterface.get_resource_filesystem()
 	var raw: Variant = params.get("paths", [])
 	var paths := PackedStringArray()
@@ -125,14 +126,48 @@ func _op_import_assets(params: Dictionary) -> Dictionary:
 			paths.append(str(entry))
 	if paths.is_empty():
 		fs.scan()
-		return {"scan_started": true, "reimported": []}
-	for res_path in paths:
-		fs.update_file(res_path)
-	fs.reimport_files(paths)
+		return {"task": ScanTask.new(server, id, fs)}
+	var total := paths.size()
 	var reimported: Array = []
-	for res_path in paths:
+	for i in total:
+		var res_path := paths[i]
+		server.emit_progress(id, {
+			"stage": "reimport", "current": i, "total": total, "message": res_path,
+		})
+		fs.update_file(res_path)
+		fs.reimport_files(PackedStringArray([res_path]))
 		reimported.append(res_path)
-	return {"scan_started": false, "reimported": reimported}
+	return {"result": {"scan_started": false, "reimported": reimported}}
+
+
+## Deferred whole-project scan (REQ-A-11): server._tick_inflight calls tick()
+## once per editor frame until EditorFileSystem finishes scanning, emitting
+## throttled progress while it runs. null = still scanning; a dict = done.
+class ScanTask:
+	extends RefCounted
+
+	var _server: Node
+	var _id: Variant
+	var _fs: EditorFileSystem
+	var _last_percent := -1
+	var _frames_since_emit := 0
+
+	func _init(srv: Node, id: Variant, fs: EditorFileSystem) -> void:
+		_server = srv
+		_id = id
+		_fs = fs
+
+	func tick() -> Variant:
+		if _fs.is_scanning():
+			var percent := int(_fs.get_scanning_progress() * 100.0)
+			_frames_since_emit += 1
+			# Throttle: emit on change, or every ~30 frames as a heartbeat.
+			if percent != _last_percent or _frames_since_emit >= 30:
+				_server.emit_progress(_id, {"stage": "scan", "current": percent, "total": 100})
+				_last_percent = percent
+				_frames_since_emit = 0
+			return null
+		return {"result": {"scan_started": true, "scan_completed": true, "reimported": []}}
 
 
 ## Resource UID lookup (REQ-B-08): the uid:// text for a res:// path, read

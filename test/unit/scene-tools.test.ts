@@ -376,3 +376,92 @@ describe("get_scene_tree", () => {
     expect(result.content[0]!.text).toContain("no open scene");
   });
 });
+
+describe("export_mesh_library", () => {
+  it("forwards contained paths and the name filter, returns item names", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/export_mesh_library": (params) => {
+        seen = params;
+        return {
+          scene_path: "res://scenes/meshes.tscn",
+          output_path: "res://libraries/meshes.res",
+          item_names: ["Box"],
+        };
+      },
+    });
+    const result = await callScene(bridge, "export_mesh_library", {
+      scene_path: "scenes/meshes.tscn",
+      output_path: "libraries/meshes.res",
+      mesh_item_names: ["Box"],
+    });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://libraries/meshes.res",
+      mesh_item_names: ["Box"],
+    });
+    expect(result.structuredContent).toMatchObject({ item_names: ["Box"] });
+  });
+
+  it("omits mesh_item_names from the op params when not provided", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "scene/export_mesh_library": (params) => {
+        seen = params;
+        return {
+          scene_path: "res://scenes/meshes.tscn",
+          output_path: "res://out.res",
+          item_names: ["Box", "Sphere"],
+        };
+      },
+    });
+    const result = await callScene(bridge, "export_mesh_library", {
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://out.res",
+    });
+    expect(result.isError).toBeUndefined();
+    expect("mesh_item_names" in seen).toBe(false);
+  });
+
+  it("rejects an escaping output_path before any bridge call", async () => {
+    const bridge = await connectedBridge({});
+    const result = await callScene(bridge, "export_mesh_library", {
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://../outside.res",
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("res://");
+  });
+
+  it("surfaces addon op errors with their guidance", async () => {
+    const bridge = await connectedBridge({
+      "scene/export_mesh_library": () =>
+        errorOutcome({
+          code: "mesh_item_names_unmatched",
+          message:
+            'None of the requested mesh_item_names matched a mesh item in the scene: ["X"]. Available item names: ["Box","Sphere"]',
+          possibleSolutions: ["Pick names from the available list."],
+        }),
+    });
+    const result = await callScene(bridge, "export_mesh_library", {
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://out.res",
+      mesh_item_names: ["X"],
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Available item names");
+  });
+
+  it("rejects a malformed op payload as a guided error", async () => {
+    const bridge = await connectedBridge({
+      "scene/export_mesh_library": () => ({ nope: true }),
+    });
+    const result = await callScene(bridge, "export_mesh_library", {
+      scene_path: "res://scenes/meshes.tscn",
+      output_path: "res://out.res",
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("malformed");
+  });
+});

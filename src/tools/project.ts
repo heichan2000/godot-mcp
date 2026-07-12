@@ -112,6 +112,7 @@ const ImportResultSchema = z
   .object({
     scan_started: z.boolean(),
     reimported: z.array(z.string()),
+    scan_completed: z.boolean().optional(),
   })
   .catchall(z.unknown());
 
@@ -226,7 +227,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
   const importAssets: ToolDescriptor = {
     name: "import_assets",
     description:
-      "Trigger the editor's filesystem scan and (re)import of new or changed assets so they become usable res:// resources.",
+      "Import new or changed assets into usable res:// resources: pass paths to (re)import specific files, or omit them to rescan the whole project (waits for the scan to finish).",
     inputSchema: {
       paths: z
         .array(z.string().min(1))

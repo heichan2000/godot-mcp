@@ -51,7 +51,9 @@ export class BridgeTimeoutError extends Error {
     readonly method: string,
     readonly timeoutMs: number,
   ) {
-    super(`The editor did not answer bridge method "${method}" within ${timeoutMs}ms.`);
+    super(
+      `The editor did not answer or report progress on bridge method "${method}" within ${timeoutMs}ms.`,
+    );
     this.name = "BridgeTimeoutError";
   }
 }
@@ -87,6 +89,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: NodeJS.Timeout;
+  method: string;
 }
 
 /**
@@ -163,6 +166,22 @@ export class BridgeConnection {
     return this.trafficLog.tail(limit);
   }
 
+  /**
+   * Arms (or re-arms) the per-request deadline (REQ-A-11). Progress frames
+   * call this again with the same args - every sign of life restarts the
+   * full window; only silence for requestTimeoutMs kills a request.
+   */
+  private armRequestTimeout(
+    id: number,
+    method: string,
+    reject: (reason: Error) => void,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
+      this.pending.delete(id);
+      reject(new BridgeTimeoutError(method, this.options.requestTimeoutMs));
+    }, this.options.requestTimeoutMs);
+  }
+
   // Deliberately not `async`: the caller must receive the exact promise we
   // attach the backstop rejection handler to (an async wrapper's outer promise
   // would surface peer-death rejections as unhandled before the caller awaits).
@@ -177,11 +196,8 @@ export class BridgeConnection {
     const id = this.nextId++;
     const socket = this.socket;
     const promise = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new BridgeTimeoutError(method, this.options.requestTimeoutMs));
-      }, this.options.requestTimeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      const timer = this.armRequestTimeout(id, method, reject);
+      this.pending.set(id, { resolve, reject, timer, method });
       const encoded = encodeRequest({ id, method, params });
       this.trafficLog.record("sent", encoded);
       socket.send(encoded, (error) => {
@@ -296,6 +312,16 @@ export class BridgeConnection {
       this.trafficLog.record("sent", ack);
       this.socket?.send(ack);
       this.setState("connected");
+      return;
+    }
+    if (frame.kind === "progress") {
+      const entry = this.pending.get(frame.progress.id);
+      if (!entry) {
+        this.log(`ignoring progress for unknown request id ${frame.progress.id}`);
+        return;
+      }
+      clearTimeout(entry.timer);
+      entry.timer = this.armRequestTimeout(frame.progress.id, entry.method, entry.reject);
       return;
     }
     const entry = this.pending.get(frame.response.id);

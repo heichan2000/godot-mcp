@@ -83,6 +83,38 @@ describe("parseAddonFrame", () => {
   });
 });
 
+describe("progress frames (REQ-A-11)", () => {
+  it("classifies a progress frame keyed by request id", () => {
+    const frame = parseAddonFrame(
+      JSON.stringify({ id: 7, progress: { stage: "reimport", current: 2, total: 5 } }),
+    );
+    expect(frame.kind).toBe("progress");
+    if (frame.kind !== "progress") throw new Error("expected progress frame");
+    expect(frame.progress.id).toBe(7);
+    expect(frame.progress.progress.stage).toBe("reimport");
+    expect(frame.progress.progress.current).toBe(2);
+  });
+
+  it("accepts extra progress payload fields via catchall", () => {
+    const frame = parseAddonFrame(
+      JSON.stringify({ id: 1, progress: { stage: "scan", files_done: 12 } }),
+    );
+    expect(frame.kind).toBe("progress");
+  });
+
+  it("rejects a progress frame without an id", () => {
+    const frame = parseAddonFrame(JSON.stringify({ progress: { stage: "scan" } }));
+    expect(frame.kind).toBe("invalid");
+  });
+
+  it("classifies a frame carrying both progress and result as a response", () => {
+    const frame = parseAddonFrame(
+      JSON.stringify({ id: 3, result: { ok: true }, progress: { stage: "x" } }),
+    );
+    expect(frame.kind).toBe("response");
+  });
+});
+
 describe("encodeRequest / helloAck", () => {
   it("encodes a request frame as JSON", () => {
     expect(JSON.parse(encodeRequest({ id: 1, method: "system/status", params: {} }))).toEqual({
