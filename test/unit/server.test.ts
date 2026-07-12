@@ -47,6 +47,7 @@ describe("server wiring", () => {
       "save_scene",
       "close_scene",
       "get_scene_tree",
+      "export_mesh_library",
       "add_node",
       "remove_node",
       "duplicate_node",

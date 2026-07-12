@@ -69,6 +69,14 @@ const SceneTreeSchema = z
   .object({ scene_path: z.string().nullable(), tree: SceneTreeNodeSchema })
   .catchall(z.unknown());
 
+const ExportMeshLibrarySchema = z
+  .object({
+    scene_path: z.string(),
+    output_path: z.string(),
+    item_names: z.array(z.string()),
+  })
+  .catchall(z.unknown());
+
 export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
   const createScene: ToolDescriptor = {
     name: "create_scene",
@@ -251,5 +259,62 @@ export function createSceneTools(deps: SceneToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [createScene, openScene, getOpenScenes, saveScene, closeScene, getSceneTree];
+  const exportMeshLibrary: ToolDescriptor = {
+    name: "export_mesh_library",
+    description:
+      "Export a scene's MeshInstance3D meshes as a MeshLibrary .res resource (for GridMap), optionally filtered by node name; overwrites the output file.",
+    inputSchema: {
+      scene_path: z
+        .string()
+        .min(1, "scene_path must not be empty.")
+        .describe('Scene to export from, e.g. "res://scenes/meshes.tscn".'),
+      output_path: z
+        .string()
+        .min(1, "output_path must not be empty.")
+        .describe(
+          'Output resource path, e.g. "res://libraries/meshes.res"; overwritten if present.',
+        ),
+      mesh_item_names: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Only export mesh items with these node names; omit to export every mesh."),
+    },
+    handler: async (args) => {
+      const { scene_path, output_path, mesh_item_names } = args as {
+        scene_path: string;
+        output_path: string;
+        mesh_item_names?: string[];
+      };
+      const scene = resolveProjectPath(deps.bridge, scene_path);
+      if ("error" in scene) return scene.error;
+      const output = resolveProjectPath(deps.bridge, output_path);
+      if ("error" in output) return output.error;
+      const params: Record<string, unknown> = {
+        scene_path: scene.resPath,
+        output_path: output.resPath,
+      };
+      if (mesh_item_names !== undefined) params.mesh_item_names = mesh_item_names;
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "scene/export_mesh_library",
+          params,
+          ExportMeshLibrarySchema,
+        );
+        return successResult("Exported mesh library", { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [
+    createScene,
+    openScene,
+    getOpenScenes,
+    saveScene,
+    closeScene,
+    getSceneTree,
+    exportMeshLibrary,
+  ];
 }

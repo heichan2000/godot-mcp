@@ -36,12 +36,14 @@ const SceneOps := preload("ops/scene_ops.gd")
 const NodeOps := preload("ops/node_ops.gd")
 const PropertyOps := preload("ops/property_ops.gd")
 const RunOps := preload("ops/run_ops.gd")
+const MeshLibraryOps := preload("ops/mesh_library_ops.gd")
 
 var _project_ops: RefCounted = null
 var _scene_ops: RefCounted = null
 var _node_ops: RefCounted = null
 var _property_ops: RefCounted = null
 var _run_ops: RefCounted = null
+var _mesh_library_ops: RefCounted = null
 
 
 func _ready() -> void:
@@ -50,6 +52,7 @@ func _ready() -> void:
 	_node_ops = NodeOps.new(self)
 	_property_ops = PropertyOps.new(self)
 	_run_ops = RunOps.new(self)
+	_mesh_library_ops = MeshLibraryOps.new(self)
 	_start_ms = Time.get_ticks_msec()
 	var port := _configured_port()
 	var err := _tcp.listen(port, "127.0.0.1")
@@ -228,6 +231,8 @@ func _dispatch(method: String, params: Dictionary, id: Variant) -> Dictionary:
 			return _scene_ops._op_scene_close(params)
 		"scene/get_tree":
 			return _scene_ops._op_scene_get_tree()
+		"scene/export_mesh_library":
+			return _mesh_library_ops._op_export_mesh_library(params, id)
 		"node/add":
 			return _node_ops._op_node_add(params)
 		"node/remove":
