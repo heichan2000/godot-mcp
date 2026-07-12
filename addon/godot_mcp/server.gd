@@ -22,6 +22,11 @@ var _start_ms := 0
 ## save clears it, get_open_scenes reports it.
 var _dirty_scenes: Dictionary = {}
 
+## The one deferred (multi-frame) op currently executing: {id, task} or empty.
+## While non-empty the queue does not drain, so serialization (REQ-A-12) holds
+## for deferred ops exactly as for synchronous ones.
+var _inflight: Dictionary = {}
+
 ## Run-output ring log (REQ-E-03), owned by the debugger-capture plugin and
 ## injected by plugin.gd before add_child so run ops can read it.
 var run_log: RefCounted = null
@@ -85,7 +90,9 @@ func _process(_delta: float) -> void:
 			_hello_sent = true
 		while _peer.get_available_packet_count() > 0:
 			_receive(_peer.get_packet().get_string_from_utf8())
-		_drain_queue()
+		_tick_inflight()
+		if _inflight.is_empty():
+			_drain_queue()
 	elif state == WebSocketPeer.STATE_CLOSED:
 		print("[godot-mcp] Bridge client disconnected (code %d)." % _peer.get_close_code())
 		_reset_peer()
@@ -120,6 +127,7 @@ func _reset_peer() -> void:
 	_peer = null
 	_hello_sent = false
 	_queue.clear()
+	_inflight = {}
 
 
 func _receive(text: String) -> void:
@@ -151,16 +159,48 @@ func _drain_queue() -> void:
 	var params: Dictionary = {}
 	if typeof(frame.get("params")) == TYPE_DICTIONARY:
 		params = frame["params"]
-	var outcome := _dispatch(method, params)
-	if outcome.has("error"):
+	var outcome := _dispatch(method, params, id)
+	if outcome.has("task"):
+		# Deferred op (REQ-A-11): hold the queue and tick it each frame.
+		_inflight = {"id": id, "task": outcome["task"]}
+	elif outcome.has("error"):
 		_send_json({"id": id, "error": outcome["error"]})
 	else:
 		_send_json({"id": id, "result": outcome.get("result")})
 
 
+## Sends a progress frame (REQ-A-11) for an in-flight op, then polls the peer
+## so the frame hits the wire immediately - WebSocketPeer buffers outgoing
+## data until poll(), and a blocking op would otherwise deliver all its
+## progress AFTER the response, defeating the client's deadline extension.
+func emit_progress(id: Variant, payload: Dictionary) -> void:
+	if _peer == null or _peer.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	_peer.send_text(JSON.stringify({"id": id, "progress": payload}))
+	_peer.poll()
+
+
+## Ticks the in-flight deferred op, if any. tick() returns null while still
+## running (it may have emitted progress) or a {result}/{error} outcome dict.
+func _tick_inflight() -> void:
+	if _inflight.is_empty():
+		return
+	var task: RefCounted = _inflight["task"]
+	var outcome: Variant = task.call("tick")
+	if outcome == null:
+		return
+	var id: Variant = _inflight["id"]
+	_inflight = {}
+	var outcome_dict: Dictionary = outcome
+	if outcome_dict.has("error"):
+		_send_json({"id": id, "error": outcome_dict["error"]})
+	else:
+		_send_json({"id": id, "result": outcome_dict.get("result")})
+
+
 ## Named-op dispatch table (REQ-M-03: only named ops exist - there is no
 ## eval/exec pathway). Later slices append branches here via ops/*.gd.
-func _dispatch(method: String, params: Dictionary) -> Dictionary:
+func _dispatch(method: String, params: Dictionary, id: Variant) -> Dictionary:
 	match method:
 		"system/status":
 			return {"result": _status()}
@@ -169,7 +209,7 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 		"project/list_resources":
 			return {"result": _project_ops._op_list_resources(params)}
 		"assets/import":
-			return {"result": _project_ops._op_import_assets(params)}
+			return _project_ops._op_import_assets(params, id)
 		"uid/get":
 			return _project_ops._op_get_uid(params)
 		"uid/update_project":
