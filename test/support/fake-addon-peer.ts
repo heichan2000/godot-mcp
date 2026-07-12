@@ -18,6 +18,12 @@ export function errorOutcome(error: BridgeErrorPayload): { __error: BridgeErrorP
   return { __error: error };
 }
 
+/** Second argument to a handler: mid-op actions the real addon can take. */
+export interface FakePeerHandlerContext {
+  /** Sends {id, progress: payload} immediately - REQ-A-11 signs of life. */
+  progress(payload: Record<string, unknown>): void;
+}
+
 export interface FakeAddonPeerOptions {
   /** Bind port; defaults to an ephemeral free port (read it back via `peer.port`). */
   port?: number;
@@ -30,7 +36,10 @@ export interface FakeAddonPeerOptions {
   /** Bridge method -> handler. Missing methods get an unknown_method error frame. */
   handlers?: Record<
     string,
-    (params: Record<string, unknown>) => HandlerResult | Promise<HandlerResult>
+    (
+      params: Record<string, unknown>,
+      context: FakePeerHandlerContext,
+    ) => HandlerResult | Promise<HandlerResult>
   >;
 }
 
@@ -75,6 +84,11 @@ export class FakeAddonPeer {
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
     // Give the OS a beat to fully release the port for same-port restarts.
     await delay(10);
+  }
+
+  /** Test hook: sends an arbitrary raw frame to the connected client. */
+  sendRaw(frame: Record<string, unknown>): void {
+    this.activeClient?.send(JSON.stringify(frame));
   }
 
   private activeClient: WebSocket | null = null;
@@ -146,9 +160,12 @@ export class FakeAddonPeer {
       );
       return;
     }
+    const context: FakePeerHandlerContext = {
+      progress: (payload) => socket.send(JSON.stringify({ id, progress: payload })),
+    };
     let outcome: HandlerResult;
     try {
-      outcome = await handler(params);
+      outcome = await handler(params, context);
     } catch (error) {
       socket.send(
         JSON.stringify({

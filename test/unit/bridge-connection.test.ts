@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION } from "../../src/bridge/protocol.js";
 import {
@@ -232,6 +233,64 @@ describe("BridgeConnection", () => {
     });
     expect(reply.result).toEqual({ ok: true });
     raw.close();
+  });
+});
+
+describe("progress frames (REQ-A-11)", () => {
+  it("progress frames extend the per-request deadline past the base timeout", async () => {
+    const peer = await startPeer({
+      handlers: {
+        "assets/import": async (_params, ctx) => {
+          for (let i = 0; i < 5; i++) {
+            await delay(100);
+            ctx.progress({ stage: "scan", current: i, total: 5 });
+          }
+          return { scan_started: true, scan_completed: true, reimported: [] };
+        },
+      },
+    });
+    const bridge = startConnection(peer.url, { requestTimeoutMs: 250 });
+    await bridge.waitForState("connected", 5_000);
+    // 5 x 100ms = 500ms of work against a 250ms base timeout: only the
+    // per-frame deadline re-arm lets this complete.
+    await expect(bridge.request("assets/import")).resolves.toMatchObject({
+      scan_completed: true,
+    });
+  });
+
+  it("times out a stalled op with a structured error, then serves the next call", async () => {
+    let calls = 0;
+    const peer = await startPeer({
+      handlers: {
+        "system/status": async () => {
+          calls += 1;
+          if (calls === 1) await delay(500); // stall well past the client's deadline
+          return { call: calls };
+        },
+      },
+    });
+    const bridge = startConnection(peer.url, { requestTimeoutMs: 300 });
+    await bridge.waitForState("connected", 5_000);
+    const failure = bridge.request("system/status");
+    await expect(failure).rejects.toBeInstanceOf(BridgeTimeoutError);
+    await failure.catch((error: Error) => {
+      expect(error.message).toContain("report progress");
+      expect(error.message).toContain("300");
+    });
+    // The stalled op's late reply (id 1) is ignored as unknown; the next call
+    // queues behind it on the peer's serial chain and round-trips normally.
+    await expect(bridge.request("system/status")).resolves.toEqual({ call: 2 });
+  });
+
+  it("ignores a progress frame for an unknown request id", async () => {
+    const peer = await startPeer({
+      handlers: { "system/status": () => ({ ok: true }) },
+    });
+    const bridge = startConnection(peer.url);
+    await bridge.waitForState("connected", 5_000);
+    peer.sendRaw({ id: 999, progress: { stage: "ghost" } });
+    await delay(50); // let the frame arrive and be dropped
+    await expect(bridge.request("system/status")).resolves.toEqual({ ok: true });
   });
 });
 
