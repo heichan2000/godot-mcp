@@ -7,7 +7,12 @@ extends "op_base.gd"
 ## and never registers UndoRedo: the output is a derived build artifact, so
 ## overwriting an existing file at output_path is allowed by design (contrast
 ## scene_ops' create-refusal). Emits progress frames (REQ-A-11) around the
-## load/collect/save phases.
+## load/collect/save phases. Registering the saved file with the editor's
+## filesystem is conditional: when output_path's parent directory is already
+## indexed, a plain update_file() is enough and the op returns immediately;
+## when the parent directory is brand-new (update_file() cannot discover a
+## directory the filesystem tree doesn't know about yet), the op kicks off a
+## full scan() and defers the response via RegisterTask until it completes.
 
 
 func _op_export_mesh_library(params: Dictionary, id: Variant) -> Dictionary:
@@ -91,8 +96,19 @@ func _op_export_mesh_library(params: Dictionary, id: Variant) -> Dictionary:
 		])
 	# Register the new file with the editor's filesystem so list_resources
 	# sees it without a manual rescan (v2 nicety - 1.0 had no live editor).
-	EditorInterface.get_resource_filesystem().update_file(output_path)
-	return {"result": {"scene_path": scene_path, "output_path": output_path, "item_names": item_names}}
+	# update_file() only refreshes a path inside a directory the filesystem
+	# tree already indexes - it cannot discover a brand-new directory (e.g.
+	# the first export into res://libraries). When the parent dir is already
+	# indexed (overwrite/re-export case), update_file() is enough and we
+	# return immediately. Otherwise defer to RegisterTask, which kicks off a
+	# full scan() and waits for it so the new directory gets indexed too.
+	var result := {"scene_path": scene_path, "output_path": output_path, "item_names": item_names}
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs.get_filesystem_path(output_path.get_base_dir()) != null:
+		fs.update_file(output_path)
+		return {"result": result}
+	fs.scan()
+	return {"task": RegisterTask.new(server, id, fs, result)}
 
 
 ## Depth-first MeshInstance3D collection, root included; instances with no
@@ -102,3 +118,38 @@ func _collect_mesh_instances(node: Node, out: Array) -> void:
 		out.append(node)
 	for child in node.get_children():
 		_collect_mesh_instances(child, out)
+
+
+## Deferred registration for an export into a brand-new directory (REQ-A-11):
+## mirrors project_ops.gd's ScanTask, but waits on a scan() kicked off after
+## ResourceSaver.save has already succeeded, then replies with the result dict
+## captured at construction rather than a fresh scan-outcome shape. null =
+## still scanning; a {result} dict = done. A scan that finishes instantly is
+## fine - it just responds on its first tick.
+class RegisterTask:
+	extends RefCounted
+
+	var _server: Node
+	var _id: Variant
+	var _fs: EditorFileSystem
+	var _result: Dictionary
+	var _last_percent := -1
+	var _frames_since_emit := 0
+
+	func _init(srv: Node, id: Variant, fs: EditorFileSystem, result: Dictionary) -> void:
+		_server = srv
+		_id = id
+		_fs = fs
+		_result = result
+
+	func tick() -> Variant:
+		if _fs.is_scanning():
+			var percent := int(_fs.get_scanning_progress() * 100.0)
+			_frames_since_emit += 1
+			# Throttle: emit on change, or every ~30 frames as a heartbeat.
+			if percent != _last_percent or _frames_since_emit >= 30:
+				_server.emit_progress(_id, {"stage": "register", "current": percent, "total": 100})
+				_last_percent = percent
+				_frames_since_emit = 0
+			return null
+		return {"result": _result}
