@@ -200,6 +200,8 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_node_rename(params)
 		"node/get_properties":
 			return _property_ops._op_get_properties(params)
+		"node/set_properties":
+			return _property_ops._op_set_properties(params)
 		"edit/undo":
 			return _node_ops._op_edit_undo()
 		"edit/redo":

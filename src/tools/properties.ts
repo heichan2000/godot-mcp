@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createErrorResponse } from "../errors.js";
+import { propertyValueSchema } from "../godot/values.js";
 import type { ToolDescriptor } from "../registry.js";
 import type { BridgePort } from "./bridge.js";
 import { bridgeErrorToResponse, requestValidated } from "./bridge.js";
@@ -14,6 +16,13 @@ const GetPropertiesSchema = z
     node_type: z.string(),
     properties: z.record(z.string(), z.unknown()),
   })
+  .catchall(z.unknown());
+
+/** Wire values for set: the shared codec plus null (clears Object-typed properties). */
+const settableValueSchema = z.union([propertyValueSchema, z.null()]);
+
+const SetPropertiesSchema = z
+  .object({ node_path: z.string(), properties: z.record(z.string(), z.unknown()) })
   .catchall(z.unknown());
 
 /**
@@ -61,5 +70,46 @@ export function createPropertyTools(deps: PropertyToolsDeps): ToolDescriptor[] {
     },
   };
 
-  return [readNodeProperties];
+  const setNodeProperties: ToolDescriptor = {
+    name: "set_node_properties",
+    description:
+      'Set one or more properties on a node in the current scene. Godot text forms like "Vector2(100, 50)" are decoded; a res:// path loads into resource-typed properties. Ctrl+Z undoes the batch.',
+    inputSchema: {
+      node_path: z
+        .string()
+        .min(1, "node_path must not be empty.")
+        .describe('Node to modify, as a path relative to the scene root, e.g. "Player/Sprite".'),
+      properties: z
+        .record(z.string().min(1), settableValueSchema)
+        .describe(
+          "Property name -> value. JSON primitives travel natively; other types as Godot text forms; a res:// path loads a resource (resource-typed properties only); null clears Object-typed properties.",
+        ),
+    },
+    handler: async (args) => {
+      const { node_path, properties } = args as {
+        node_path: string;
+        properties: Record<string, unknown>;
+      };
+      if (properties === undefined || Object.keys(properties).length === 0) {
+        return createErrorResponse({
+          message: "properties must contain at least one name -> value entry.",
+          possibleSolutions: ['Pass e.g. { "position": "Vector2(100, 50)" }.'],
+        });
+      }
+      try {
+        const outcome = await requestValidated(
+          deps.bridge,
+          "node/set_properties",
+          { node_path, properties },
+          SetPropertiesSchema,
+        );
+        const count = Object.keys(outcome.properties).length;
+        return successResult(`Set ${count} propert${count === 1 ? "y" : "ies"}`, { ...outcome });
+      } catch (error) {
+        return bridgeErrorToResponse(error);
+      }
+    },
+  };
+
+  return [readNodeProperties, setNodeProperties];
 }

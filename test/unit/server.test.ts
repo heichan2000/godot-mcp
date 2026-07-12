@@ -53,6 +53,7 @@ describe("server wiring", () => {
       "move_node",
       "rename_node",
       "read_node_properties",
+      "set_node_properties",
       "get_script_errors",
       "run_project",
       "stop_project",
