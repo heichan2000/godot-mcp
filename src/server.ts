@@ -11,6 +11,7 @@ import { createDiagnosticsTools } from "./tools/diagnostics.js";
 import { createNodeTools } from "./tools/node.js";
 import { createOnboardingTools } from "./tools/onboarding.js";
 import { createProjectTools } from "./tools/project.js";
+import { createPropertyTools } from "./tools/properties.js";
 import { createRunTools } from "./tools/run.js";
 import { createSceneTools } from "./tools/scene.js";
 import { createUidTools } from "./tools/uid.js";
@@ -43,6 +44,7 @@ export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
     ...createUidTools({ bridge: deps.bridge }),
     ...createSceneTools({ bridge: deps.bridge }),
     ...createNodeTools({ bridge: deps.bridge }),
+    ...createPropertyTools({ bridge: deps.bridge }),
     ...createDiagnosticsTools({ bridge: deps.bridge, lspPort: deps.lspPort ?? DEFAULT_LSP_PORT }),
     ...createRunTools({
       bridge: deps.bridge,
