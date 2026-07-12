@@ -81,6 +81,25 @@ export const ResponseFrameSchema = z.object({
 });
 export type ResponseFrame = z.infer<typeof ResponseFrameSchema>;
 
+/**
+ * Progress frame: a long-running op's "signs of life" (REQ-A-11), keyed by
+ * the request id it belongs to. Each one re-arms the client's per-request
+ * deadline. Payload fields are advisory; `catchall` lets ops add detail
+ * without a protocol change.
+ */
+export const ProgressFrameSchema = z.object({
+  id: z.number().int(),
+  progress: z
+    .object({
+      stage: z.string().optional(),
+      current: z.number().optional(),
+      total: z.number().optional(),
+      message: z.string().optional(),
+    })
+    .catchall(z.unknown()),
+});
+export type ProgressFrame = z.infer<typeof ProgressFrameSchema>;
+
 export interface RequestFrame {
   id: number;
   method: string;
@@ -90,6 +109,7 @@ export interface RequestFrame {
 export type AddonFrame =
   | { kind: "hello"; hello: Hello }
   | { kind: "hello_mismatch"; protocolVersion: number }
+  | { kind: "progress"; progress: ProgressFrame }
   | { kind: "response"; response: ResponseFrame }
   | { kind: "invalid"; reason: string };
 
@@ -104,6 +124,10 @@ export type AddonFrame =
  * `protocol_version` regardless of what else the frame contains; only once
  * that version matches `PROTOCOL_VERSION` is the full `HelloSchema` applied.
  * A same-version hello that fails the full schema is still `invalid`.
+ *
+ * Progress frames (REQ-A-11) are checked after hello and before response: a
+ * `{id, progress}` object with neither `result` nor `error` is `progress`;
+ * once either of those keys appears the frame is a `response` instead.
  */
 export function parseAddonFrame(text: string): AddonFrame {
   let raw: unknown;
@@ -126,6 +150,12 @@ export function parseAddonFrame(text: string): AddonFrame {
       kind: "invalid",
       reason: "hello frame matches this protocol version but fails full validation",
     };
+  }
+  // A frame with both `progress` and `result` deliberately falls through to
+  // the response check below - a result always outranks advisory progress.
+  const progress = ProgressFrameSchema.safeParse(raw);
+  if (progress.success && !("result" in raw) && !("error" in raw)) {
+    return { kind: "progress", progress: progress.data };
   }
   const response = ResponseFrameSchema.safeParse(raw);
   if (response.success && ("result" in raw || "error" in raw)) {

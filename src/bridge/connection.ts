@@ -298,6 +298,14 @@ export class BridgeConnection {
       this.setState("connected");
       return;
     }
+    if (frame.kind === "progress") {
+      // REQ-A-11 progress frames are advisory "signs of life" for
+      // long-running ops; re-arming the per-request deadline from them is
+      // wired up in a later task. For now just observe them without
+      // resolving/rejecting the pending request.
+      this.log(`progress for request ${frame.progress.id}: ${JSON.stringify(frame.progress)}`);
+      return;
+    }
     const entry = this.pending.get(frame.response.id);
     if (!entry) {
       this.log(`ignoring response for unknown request id ${frame.response.id}`);
