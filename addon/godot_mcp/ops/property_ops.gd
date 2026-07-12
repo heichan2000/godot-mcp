@@ -85,8 +85,16 @@ func _unknown_property(node: Node, entries: Dictionary, name: String) -> Diction
 ## var_to_str text form, e.g. "Vector2(100, 50)" or
 ## 'Resource("res://textures/sprite.png")'.
 func encode_property_value(value: Variant) -> Variant:
+	# A cleared Object-typed property (e.g. after setting a Resource-typed
+	# property to null) reads back as a Variant of type OBJECT wrapping a
+	# null pointer, NOT TYPE_NIL - var_to_str's null-Object case would print
+	# it as the literal text "null" (a String, not JSON null). The `==` op
+	# treats a null-Object Variant as equal to the `null` literal regardless
+	# of its type tag, so check equality before the type match.
+	if value == null:
+		return null
 	match typeof(value):
-		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING:
+		TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING:
 			return value
 		_:
 			return var_to_str(value)
