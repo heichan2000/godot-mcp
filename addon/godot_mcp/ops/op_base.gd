@@ -35,3 +35,11 @@ func _current_scene_path() -> String:
 	if root == null:
 		return ""
 	return root.scene_file_path
+
+
+## Resolve a caller-supplied node path against the edited scene root.
+## "" and "." address the root; null means not found (caller emits the error).
+func _resolve_node(scene_root: Node, node_path: String) -> Node:
+	if node_path == "" or node_path == ".":
+		return scene_root
+	return scene_root.get_node_or_null(NodePath(node_path))

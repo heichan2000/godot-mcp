@@ -29,11 +29,13 @@ var run_log: RefCounted = null
 const ProjectOps := preload("ops/project_ops.gd")
 const SceneOps := preload("ops/scene_ops.gd")
 const NodeOps := preload("ops/node_ops.gd")
+const PropertyOps := preload("ops/property_ops.gd")
 const RunOps := preload("ops/run_ops.gd")
 
 var _project_ops: RefCounted = null
 var _scene_ops: RefCounted = null
 var _node_ops: RefCounted = null
+var _property_ops: RefCounted = null
 var _run_ops: RefCounted = null
 
 
@@ -41,6 +43,7 @@ func _ready() -> void:
 	_project_ops = ProjectOps.new(self)
 	_scene_ops = SceneOps.new(self)
 	_node_ops = NodeOps.new(self)
+	_property_ops = PropertyOps.new(self)
 	_run_ops = RunOps.new(self)
 	_start_ms = Time.get_ticks_msec()
 	var port := _configured_port()
@@ -195,6 +198,10 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 			return _node_ops._op_node_move(params)
 		"node/rename":
 			return _node_ops._op_node_rename(params)
+		"node/get_properties":
+			return _property_ops._op_get_properties(params)
+		"node/set_properties":
+			return _property_ops._op_set_properties(params)
 		"edit/undo":
 			return _node_ops._op_edit_undo()
 		"edit/redo":
