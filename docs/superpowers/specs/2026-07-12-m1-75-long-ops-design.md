@@ -24,7 +24,10 @@ Today `connection.ts` arms a flat `BRIDGE_TIMEOUT_MS` (default 30s) timer per re
 New addon→server frame, keyed by request id:
 
 ```json
-{ "id": 7, "progress": { "stage": "reimport", "current": 2, "total": 5, "message": "res://textures/a.png" } }
+{
+  "id": 7,
+  "progress": { "stage": "reimport", "current": 2, "total": 5, "message": "res://textures/a.png" }
+}
 ```
 
 - `src/bridge/protocol.ts`: add `ProgressFrameSchema` (`id` int required; `progress` object with optional `stage`/`current`/`total`/`message`, catchall) and a new `AddonFrame` kind `"progress"` in `parseAddonFrame` — checked before the response shape; a frame with a `progress` key and no `result`/`error` is progress.
@@ -67,14 +70,14 @@ New addon→server frame, keyed by request id:
 
 ## Errors (REQ-A-08 shape throughout)
 
-| Code | When | Guidance |
-| --- | --- | --- |
-| `scene_not_found` | no file at `scene_path` | check with list_resources |
-| `no_meshes` | scene has no MeshInstance3D with an assigned mesh | assign meshes / pick another scene |
-| `mesh_item_names_unmatched` | filter matches nothing | message lists available item names |
-| `save_failed` | ResourceSaver error | check output path/permissions |
-| containment reject | `output_path`/`scene_path` escapes res:// | use a res:// project path |
-| bridge timeout | no answer **and no progress** within `BRIDGE_TIMEOUT_MS` | retry; raise BRIDGE_TIMEOUT_MS for legitimately longer ops |
+| Code                        | When                                                     | Guidance                                                   |
+| --------------------------- | -------------------------------------------------------- | ---------------------------------------------------------- |
+| `scene_not_found`           | no file at `scene_path`                                  | check with list_resources                                  |
+| `no_meshes`                 | scene has no MeshInstance3D with an assigned mesh        | assign meshes / pick another scene                         |
+| `mesh_item_names_unmatched` | filter matches nothing                                   | message lists available item names                         |
+| `save_failed`               | ResourceSaver error                                      | check output path/permissions                              |
+| containment reject          | `output_path`/`scene_path` escapes res://                | use a res:// project path                                  |
+| bridge timeout              | no answer **and no progress** within `BRIDGE_TIMEOUT_MS` | retry; raise BRIDGE_TIMEOUT_MS for legitimately longer ops |
 
 ## 6. Fake peer (`test/support/fake-addon-peer.ts`)
 
@@ -99,14 +102,14 @@ New addon→server frame, keyed by request id:
 
 ## Files touched
 
-| File | Change |
-| --- | --- |
-| `src/bridge/protocol.ts` | `ProgressFrameSchema`, `AddonFrame` kind `"progress"` |
-| `src/bridge/connection.ts` | deadline re-arm on progress; timeout message |
-| `src/tools/project.ts` | `ImportResultSchema` + `scan_completed` |
-| `src/tools/scene.ts` | new `export_mesh_library` tool |
-| `addon/godot_mcp/server.gd` | `emit_progress`, `_inflight` deferred slot, dispatch wiring |
-| `addon/godot_mcp/ops/project_ops.gd` | per-file reimport progress; `ScanTask` deferred scan |
-| `addon/godot_mcp/ops/mesh_library_ops.gd` | new — export op |
-| `test/support/fake-addon-peer.ts` | progress context + stall staging |
-| `test/unit/*`, `test/integration/*` | coverage above |
+| File                                      | Change                                                      |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `src/bridge/protocol.ts`                  | `ProgressFrameSchema`, `AddonFrame` kind `"progress"`       |
+| `src/bridge/connection.ts`                | deadline re-arm on progress; timeout message                |
+| `src/tools/project.ts`                    | `ImportResultSchema` + `scan_completed`                     |
+| `src/tools/scene.ts`                      | new `export_mesh_library` tool                              |
+| `addon/godot_mcp/server.gd`               | `emit_progress`, `_inflight` deferred slot, dispatch wiring |
+| `addon/godot_mcp/ops/project_ops.gd`      | per-file reimport progress; `ScanTask` deferred scan        |
+| `addon/godot_mcp/ops/mesh_library_ops.gd` | new — export op                                             |
+| `test/support/fake-addon-peer.ts`         | progress context + stall staging                            |
+| `test/unit/*`, `test/integration/*`       | coverage above                                              |
