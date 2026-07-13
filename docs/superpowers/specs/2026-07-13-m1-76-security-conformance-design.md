@@ -77,6 +77,13 @@ Two new suites, each proving one layer with the other layer bypassed.
     path probes the host filesystem (an existence-leak, read-only). In-scope
     fix: add the `_scene_res_path` re-check and reject with `path_escape`
     before any `FileAccess` call; the suite proves the fix.
+  - `assets/import` (`paths[]`) and `project/list_resources` (`directory`) —
+    **two sibling gaps found while planning:** neither runs `_scene_res_path`
+    on its caller-supplied paths. Same in-scope fix as `uid/get`: reject with
+    `path_escape` before touching the editor filesystem. Their server-side
+    tools (`import_assets`, `list_resources`) also forward these params with
+    no `resolveProjectPath` call — the §1a sweep exposes that, and adding
+    server-side containment there is in scope too.
 - **Asserts, per op × payload:** a structured error frame (the addon's `_err`
   shape) — never a result — **and** that the would-be escape target does not
   exist on disk afterwards (checked at the resolved location next to the fixture
