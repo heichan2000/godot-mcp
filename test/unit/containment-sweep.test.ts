@@ -68,6 +68,8 @@ const EXEMPT = new Set([
   "list_projects.directory", // host-level workspace root to scan (bounded listing, REQ-B-02)
 ]);
 
+// The guard only conscripts params matching this - name any new filesystem
+// param to end in path/paths/directory or it will not be swept.
 const PATH_LIKE = /(^|_)(path|paths|directory)$/;
 
 function recordingBridge(): { bridge: BridgePort; requests: string[] } {

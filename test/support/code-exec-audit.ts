@@ -2,7 +2,9 @@
  * REQ-M-03 code-exec audit (#76): flags inventory entries whose name contains
  * an eval/exec-shaped token. Token-based (split on `_`, `/`, and camelCase
  * boundaries), so run_project and get_script_errors stay clean while
- * execute_expression or run_code_snippet are flagged.
+ * execute_expression or run_code_snippet are flagged. A heuristic tripwire,
+ * not the guarantee itself - REQ-M-03 is enforced architecturally by the
+ * named-op dispatch table having no eval pathway.
  */
 const DENY_TOKENS = new Set([
   "eval",
