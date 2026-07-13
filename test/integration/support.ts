@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -97,6 +97,21 @@ export interface EditorHandle {
 }
 
 /**
+ * When GODOT_MCP_TEST_LOG_DIR is set (CI does), every launched editor's
+ * stdout/stderr is appended to its own file there, so a failed run leaves
+ * evidence of what the editor session actually did (#96) - assertion
+ * cascades in the vitest output hide the editor-side fault otherwise.
+ * Returns undefined when unset (local default: no files).
+ */
+function editorLogPath(projectDir: string): string | undefined {
+  const logDir = process.env.GODOT_MCP_TEST_LOG_DIR?.trim();
+  if (!logDir) return undefined;
+  mkdirSync(logDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(logDir, `editor-${stamp}-${path.basename(projectDir)}.log`);
+}
+
+/**
  * Boots a real Godot EDITOR on the project. CI wraps the whole test run in
  * xvfb-run (see .github/workflows/ci.yml); locally this opens a visible
  * editor window unless GODOT_MCP_TEST_HEADLESS=1 adds --headless.
@@ -112,13 +127,21 @@ export function launchEditor(projectDir: string, options: { lspPort?: number } =
   if (process.env.GODOT_MCP_TEST_HEADLESS === "1") {
     args.unshift("--headless");
   }
+  const logPath = editorLogPath(projectDir);
+  const logLine = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+    const text = chunk.toString().trimEnd();
+    if (process.env.DEBUG) console.error(`[editor ${stream}] ${text}`);
+    if (logPath) appendFileSync(logPath, `[${new Date().toISOString()}] [${stream}] ${text}\n`);
+  };
+  if (logPath) {
+    appendFileSync(
+      logPath,
+      `[${new Date().toISOString()}] [launch] ${godotPath} ${args.join(" ")}\n`,
+    );
+  }
   const child = spawn(godotPath!, args, { stdio: ["ignore", "pipe", "pipe"] });
-  child.stdout?.on("data", (chunk: Buffer) => {
-    if (process.env.DEBUG) console.error(`[editor stdout] ${chunk.toString().trimEnd()}`);
-  });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    if (process.env.DEBUG) console.error(`[editor stderr] ${chunk.toString().trimEnd()}`);
-  });
+  child.stdout?.on("data", (chunk: Buffer) => logLine("stdout", chunk));
+  child.stderr?.on("data", (chunk: Buffer) => logLine("stderr", chunk));
   return {
     child,
     kill: () =>
