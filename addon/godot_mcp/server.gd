@@ -262,7 +262,7 @@ func _dispatch(method: String, params: Dictionary, id: Variant) -> Dictionary:
 		"project/info":
 			return {"result": _project_ops._op_project_info()}
 		"project/list_resources":
-			return {"result": _project_ops._op_list_resources(params)}
+			return _project_ops._op_list_resources(params)
 		"assets/import":
 			return _project_ops._op_import_assets(params, id)
 		"uid/get":

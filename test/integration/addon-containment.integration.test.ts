@@ -69,6 +69,10 @@ describe.runIf(hasGodot)("addon-layer containment via raw bridge client (REQ-M-0
       op: "scene/export_mesh_library",
       params: (escape) => ({ scene_path: "res://ignored.tscn", output_path: escape }),
     },
+    // The three ops hardened in #76 - no addon re-check existed before.
+    { op: "uid/get", params: (escape) => ({ path: escape }) },
+    { op: "assets/import", params: (escape) => ({ paths: [escape] }) },
+    { op: "project/list_resources", params: (escape) => ({ directory: escape }) },
   ];
 
   for (const { op, params } of GUARDED) {
