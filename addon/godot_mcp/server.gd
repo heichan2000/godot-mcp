@@ -10,6 +10,8 @@ extends Node
 const PROTOCOL_VERSION := 1
 const DEFAULT_PORT := 6510
 const PORT_SETTING := "godot_mcp/network/port"
+const DEFERRED_TIMEOUT_SETTING := "godot_mcp/network/deferred_op_timeout_ms"
+const DEFAULT_DEFERRED_TIMEOUT_MS := 300_000
 
 var _tcp := TCPServer.new()
 var _peer: WebSocketPeer = null
@@ -73,6 +75,20 @@ func _configured_port() -> int:
 		push_warning("[godot-mcp] Ignoring invalid %s value %s; using default port %d." % [PORT_SETTING, str(raw), DEFAULT_PORT])
 		return DEFAULT_PORT
 	return port
+
+
+## Reads godot_mcp/network/deferred_op_timeout_ms - the wall-clock cap (#95)
+## on how long one deferred op may hold the queue - falling back to the
+## default on non-numeric or non-positive values (mirrors _configured_port).
+func _deferred_op_timeout_ms() -> int:
+	if not ProjectSettings.has_setting(DEFERRED_TIMEOUT_SETTING):
+		return DEFAULT_DEFERRED_TIMEOUT_MS
+	var raw: Variant = ProjectSettings.get_setting(DEFERRED_TIMEOUT_SETTING)
+	var timeout_ms := int(raw)
+	if timeout_ms < 1:
+		push_warning("[godot-mcp] Ignoring invalid %s value %s; using default %d ms." % [DEFERRED_TIMEOUT_SETTING, str(raw), DEFAULT_DEFERRED_TIMEOUT_MS])
+		return DEFAULT_DEFERRED_TIMEOUT_MS
+	return timeout_ms
 
 
 func _exit_tree() -> void:
@@ -164,8 +180,17 @@ func _drain_queue() -> void:
 		params = frame["params"]
 	var outcome := _dispatch(method, params, id)
 	if outcome.has("task"):
-		# Deferred op (REQ-A-11): hold the queue and tick it each frame.
-		_inflight = {"id": id, "task": outcome["task"]}
+		# Deferred op (REQ-A-11): hold the queue and tick it each frame. The
+		# wall-clock cap (#95) is stamped now so _tick_inflight can always
+		# free the slot - progress re-arms the CLIENT's deadline, so without
+		# this cap a task that never completes would wedge the bridge forever.
+		var cap_ms := _deferred_op_timeout_ms()
+		_inflight = {
+			"id": id,
+			"task": outcome["task"],
+			"cap_ms": cap_ms,
+			"deadline_ms": Time.get_ticks_msec() + cap_ms,
+		}
 	elif outcome.has("error"):
 		_send_json({"id": id, "error": outcome["error"]})
 	else:
@@ -185,15 +210,42 @@ func emit_progress(id: Variant, payload: Dictionary) -> void:
 
 ## Ticks the in-flight deferred op, if any. tick() returns null while still
 ## running (it may have emitted progress) or a {result}/{error} outcome dict.
+## The wall-clock cap (#95) is checked BEFORE ticking: on expiry the task is
+## abandoned (dropped - any underlying editor scan continues harmlessly, and
+## no late frames can leak since only the armed task emits progress for its
+## id), a structured error is sent, and the queue resumes draining this same
+## frame (REQ-A-12). The outcome guard keeps a future task's malformed tick()
+## return from crashing the queue.
 func _tick_inflight() -> void:
 	if _inflight.is_empty():
+		return
+	var id: Variant = _inflight["id"]
+	if Time.get_ticks_msec() >= int(_inflight["deadline_ms"]):
+		var cap_ms := int(_inflight["cap_ms"])
+		_inflight = {}
+		_send_json({"id": id, "error": {
+			"code": "deferred_op_timeout",
+			"message": "Deferred op exceeded the %d ms wall-clock cap and was abandoned." % cap_ms,
+			"possibleSolutions": [
+				"Raise godot_mcp/network/deferred_op_timeout_ms in project settings if this op legitimately needs longer.",
+				"Check the editor for a stuck filesystem scan.",
+			],
+		}})
 		return
 	var task: RefCounted = _inflight["task"]
 	var outcome: Variant = task.call("tick")
 	if outcome == null:
 		return
-	var id: Variant = _inflight["id"]
 	_inflight = {}
+	if not (outcome is Dictionary):
+		_send_json({"id": id, "error": {
+			"code": "internal_error",
+			"message": "Deferred task returned a malformed outcome (%s)." % type_string(typeof(outcome)),
+			"possibleSolutions": [
+				"This is an addon bug - report it with the op name and editor log.",
+			],
+		}})
+		return
 	var outcome_dict: Dictionary = outcome
 	if outcome_dict.has("error"):
 		_send_json({"id": id, "error": outcome_dict["error"]})
