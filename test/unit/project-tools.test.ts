@@ -62,11 +62,20 @@ function writeProject(dir: string, name: string, version: string): void {
   );
 }
 
-/** A connected BridgeConnection backed by a FakeAddonPeer with the given op handlers. */
+/**
+ * A connected BridgeConnection backed by a FakeAddonPeer with the given op
+ * handlers. `projectPath` defaults to a real, existing temp dir (rather than
+ * the FakeAddonPeer's fictitious default) so the server-side assertInsideRoot
+ * check inside resolveProjectPath (REQ-M-01) can realpath it.
+ */
 async function connectedBridge(
   handlers: NonNullable<Parameters<typeof FakeAddonPeer.start>[0]>["handlers"],
+  projectPath: string = tempDir(),
 ): Promise<BridgeConnection> {
-  const peer = await FakeAddonPeer.start({ handlers });
+  const peer = await FakeAddonPeer.start({
+    handlers,
+    helloOverrides: { project_path: projectPath },
+  });
   cleanups.push(() => peer.close());
   const bridge = new BridgeConnection({
     url: peer.url,
@@ -242,6 +251,19 @@ describe("list_resources", () => {
       .possibleSolutions;
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
   });
+
+  it("canonicalizes directory to a res:// path before forwarding (REQ-M-01)", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "project/list_resources": (params) => {
+        seen = params;
+        return { resources: [], count: 0 };
+      },
+    });
+    const result = await callBridge(bridge, "list_resources", { directory: "scenes" });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ directory: "res://scenes" });
+  });
 });
 
 describe("import_assets", () => {
@@ -276,5 +298,20 @@ describe("import_assets", () => {
     const solutions = (result.structuredContent as { possibleSolutions: string[] })
       .possibleSolutions;
     expect(solutions.join(" ")).toContain("@cradial/godot-mcp@1.x");
+  });
+
+  it("canonicalizes each path before forwarding (REQ-M-01)", async () => {
+    let seen: Record<string, unknown> = {};
+    const bridge = await connectedBridge({
+      "assets/import": (params) => {
+        seen = params;
+        return { scan_started: false, reimported: [] };
+      },
+    });
+    const result = await callBridge(bridge, "import_assets", {
+      paths: ["art/a.png", "res://art/b.png"],
+    });
+    expect(result.isError).toBeUndefined();
+    expect(seen).toMatchObject({ paths: ["res://art/a.png", "res://art/b.png"] });
   });
 });
