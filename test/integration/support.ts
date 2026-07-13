@@ -62,6 +62,21 @@ export function setBridgePort(projectDir: string, port: number): void {
   appendFileSync(projectFile, `\n[godot_mcp]\n\nnetwork/port=${port}\n`);
 }
 
+/**
+ * Appends godot_mcp/network/deferred_op_timeout_ms to project.godot (#95).
+ * Must run after setBridgePort: the [godot_mcp] section must already exist,
+ * and the appended key lands inside it because that section is the file's
+ * tail (setBridgePort appends it last).
+ */
+export function setDeferredOpTimeout(projectDir: string, ms: number): void {
+  const projectFile = path.join(projectDir, "project.godot");
+  const current = readFileSync(projectFile, "utf8");
+  if (!current.includes("[godot_mcp]")) {
+    throw new Error("call setBridgePort first: the [godot_mcp] section must exist");
+  }
+  appendFileSync(projectFile, `network/deferred_op_timeout_ms=${ms}\n`);
+}
+
 /** Asks the OS for a free loopback port, then releases it for the editor to claim. */
 export async function pickFreePort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
