@@ -1,4 +1,5 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BridgeConnection } from "../../src/bridge/connection.js";
@@ -119,6 +120,16 @@ describe.runIf(hasGodot)("run control against a real editor (#72)", () => {
     await bridge?.stop();
     await editor?.kill();
     if (projectDir) rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("the forwarding autoload is on disk by the time the bridge accepts ops (#96)", () => {
+    // Spawned games read project.godot from disk; if the plugin's boot
+    // self-heal hasn't flushed the GodotMCPRuntime autoload before the
+    // bridge comes up, a first-play game boots without the forwarding
+    // logger and the whole session's output is silently lost.
+    const settings = readFileSync(path.join(projectDir, "project.godot"), "utf8");
+    expect(settings).toContain("[autoload]");
+    expect(settings).toContain("GodotMCPRuntime");
   });
 
   it("get_debug_output is safe before any run: empty, not playing", async () => {
