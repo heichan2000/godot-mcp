@@ -90,6 +90,19 @@ jobs:
 
       # The #64 feasibility spike, enforced forever after: a real editor
       # process under a virtual display, the bundled addon, a WebSocket
-      # handshake, and tool calls through the bridge.
+      # handshake, and tool calls through the bridge. Suites run serially
+      # (vitest.integration.config.ts fileParallelism: false) - one editor
+      # at a time - and each editor's stdout/stderr lands in
+      # GODOT_MCP_TEST_LOG_DIR so a failure leaves evidence (#96).
       - name: Integration tests (real editor under xvfb)
         run: xvfb-run --auto-servernum npm run test:integration
+        env:
+          GODOT_MCP_TEST_LOG_DIR: ${{ runner.temp }}/godot-editor-logs
+
+      - name: Upload editor session logs (failures only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-logs-godot-${{ matrix.godot_version }}
+          path: ${{ runner.temp }}/godot-editor-logs
+          if-no-files-found: ignore
