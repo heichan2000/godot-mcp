@@ -4,6 +4,8 @@ extends "op_base.gd"
 ## Project op handlers, split out of server.gd (#70). Bodies are
 ## verbatim moves; shared helpers live in op_base.gd, shared state on server.
 
+const DeferredScanTask := preload("deferred_scan_task.gd")
+
 
 ## Project metadata read from the live editor (REQ-B-02): name/main scene/
 ## autoloads from ProjectSettings, versions from the engine, file tallies from
@@ -114,7 +116,7 @@ func _under_dir(res_path: String, prefix: String) -> bool:
 ## With explicit `paths`: register + reimport the files one at a time, emitting
 ## a reimport progress frame before each so big batches keep extending the
 ## client's deadline. With no paths: kick off an async whole-project rescan and
-## defer the response via ScanTask - the client's reply arrives only when the
+## defer the response via DeferredScanTask - the client's reply arrives only when the
 ## editor finishes scanning. The PRODUCT never spawns Godot (REQ-A-01).
 ## Returns a full outcome dict ({"result"} or {"task"}), not a bare result.
 func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
@@ -126,7 +128,9 @@ func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
 			paths.append(str(entry))
 	if paths.is_empty():
 		fs.scan()
-		return {"task": ScanTask.new(server, id, fs)}
+		return {"task": DeferredScanTask.new(server, id, fs, "scan", {
+			"scan_started": true, "scan_completed": true, "reimported": [],
+		})}
 	var total := paths.size()
 	var reimported: Array = []
 	for i in total:
@@ -138,36 +142,6 @@ func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
 		fs.reimport_files(PackedStringArray([res_path]))
 		reimported.append(res_path)
 	return {"result": {"scan_started": false, "reimported": reimported}}
-
-
-## Deferred whole-project scan (REQ-A-11): server._tick_inflight calls tick()
-## once per editor frame until EditorFileSystem finishes scanning, emitting
-## throttled progress while it runs. null = still scanning; a dict = done.
-class ScanTask:
-	extends RefCounted
-
-	var _server: Node
-	var _id: Variant
-	var _fs: EditorFileSystem
-	var _last_percent := -1
-	var _frames_since_emit := 0
-
-	func _init(srv: Node, id: Variant, fs: EditorFileSystem) -> void:
-		_server = srv
-		_id = id
-		_fs = fs
-
-	func tick() -> Variant:
-		if _fs.is_scanning():
-			var percent := int(_fs.get_scanning_progress() * 100.0)
-			_frames_since_emit += 1
-			# Throttle: emit on change, or every ~30 frames as a heartbeat.
-			if percent != _last_percent or _frames_since_emit >= 30:
-				_server.emit_progress(_id, {"stage": "scan", "current": percent, "total": 100})
-				_last_percent = percent
-				_frames_since_emit = 0
-			return null
-		return {"result": {"scan_started": true, "scan_completed": true, "reimported": []}}
 
 
 ## Resource UID lookup (REQ-B-08): the uid:// text for a res:// path, read
