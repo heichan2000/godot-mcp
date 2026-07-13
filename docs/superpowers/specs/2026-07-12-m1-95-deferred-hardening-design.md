@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-12
 **Issue:** #95 (follow-up from #75 / PR #94 final review). Hardens REQ-A-11 machinery; queue-survival per REQ-A-12; error shape per REQ-A-08.
-**Status:** Approved in brainstorming session (four axes user-decided: include the optional dedup as a shared base; cap configured via ProjectSettings with a 5-minute default; cap enforced server-side in `_tick_inflight`; ~10-tick grace on the scan-start gate).
+**Status:** Approved in brainstorming session (four axes user-decided: include the optional dedup as a shared base; cap configured via ProjectSettings with a 5-minute default; cap enforced server-side in `_tick_inflight`; 10-tick grace on the scan-start gate).
 
 ## Goal
 
@@ -19,15 +19,15 @@ This slice fixes all three, plus the review's optional item 4 (dedup the near-ve
 1. **Include the dedup (issue item 4):** the race fix must land in both tasks anyway; a shared base writes the gate, grace, and heartbeat once.
 2. **Cap configured via ProjectSettings:** `godot_mcp/network/deferred_op_timeout_ms`, default **300 000 ms (5 min)** — generous for huge project scans, still frees a wedged queue same-session. Read leniently, mirroring the existing `godot_mcp/network/port` pattern (`server.gd` `_configured_port`).
 3. **Cap enforced server-side** in `_tick_inflight`, not in the task: the cap is the queue's liveness guarantee, so it belongs to the queue owner — every current and future task type is capped by construction, even one that never extends the scan base.
-4. **Scan-start gate uses a ~10-tick grace:** small enough that a bare no-op `import_assets` answers ~10 editor frames later than today (imperceptible next to the websocket round trip); if the flag flips later than that, behavior degrades to today's early completion — never a hang (the cap guarantees that independently).
+4. **Scan-start gate uses a 10-tick grace** (`GRACE_TICKS := 10`): small enough that a bare no-op `import_assets` answers at most 10 editor frames later than today (imperceptible next to the websocket round trip); if the flag flips later than that, behavior degrades to today's early completion — never a hang (the cap guarantees that independently).
 
 ## 1. Shared base: `addon/godot_mcp/ops/deferred_scan_task.gd`
 
 New `RefCounted` class owning everything the two tasks currently duplicate, plus the new gate:
 
 - **Constructor:** server node, request id, `EditorFileSystem`, progress `stage` name (`"scan"` / `"register"`), and the completion payload (the `Dictionary` placed under `result`).
-- **Throttle/heartbeat loop** (verbatim from today's copies): while `is_scanning()`, emit `emit_progress(id, {stage, current: percent, total: 100})` on percent change or every ~30 frames.
-- **Scan-start gate (fix 1):** two fields, `_scan_observed := false` and `_ticks := 0`, incremented per `tick()`. When `is_scanning()` is true, set `_scan_observed = true`. When false, complete **only if** `_scan_observed` (scan ran and finished) **or** `_ticks >= GRACE_TICKS` (const, 10 — a genuinely instant scan still responds promptly). Otherwise return `null` and keep waiting.
+- **Throttle/heartbeat loop** (verbatim from today's copies): while `is_scanning()`, emit `emit_progress(id, {stage, current: percent, total: 100})` on percent change or every 30 frames (the existing `_frames_since_emit >= 30` counter).
+- **Scan-start gate (fix 1):** two fields, `_scan_observed := false` and `_ticks := 0`; `_ticks` increments at the top of every `tick()`. When `is_scanning()` is true, set `_scan_observed = true`. When false, complete **only if** `_scan_observed` (scan ran and finished) **or** `_ticks >= GRACE_TICKS` (`const GRACE_TICKS := 10` — a genuinely instant scan still responds promptly). Otherwise return `null` and keep waiting.
 
 The `ScanTask` and `RegisterTask` classes are deleted; their two construction sites instantiate the base directly — the tasks differ only in stage name and payload, so subclasses would be empty shells. `import_assets`'s payload is `{scan_started: true, scan_completed: true, reimported: []}`; the mesh-library site's is its captured export result. The base's contract: **`tick()` returns `null` while running (possibly emitting progress) or `{result: …}` when verifiably done.**
 
@@ -35,7 +35,7 @@ The `ScanTask` and `RegisterTask` classes are deleted; their two construction si
 
 - **Arming:** where `_inflight = {"id": id, "task": …}` is set today (`server.gd:168`), also stamp `"deadline_ms": Time.get_ticks_msec() + _deferred_op_timeout_ms()`.
 - **`_deferred_op_timeout_ms()`:** lenient ProjectSettings read of `godot_mcp/network/deferred_op_timeout_ms`; missing → 300 000; non-numeric or < 1 → `push_warning` + 300 000 (exact analogue of `_configured_port`).
-- **Enforcement:** `_tick_inflight` checks the deadline **before** ticking the task. On expiry it does not tick again; it sends a structured REQ-A-08 error, clears `_inflight`, and the same `_process` frame's `_drain_queue()` resumes serving:
+- **Enforcement:** `_tick_inflight` checks the deadline **before** ticking the task. On expiry it does not tick again; it sends a structured REQ-A-08 error (the message interpolates the cap actually in effect, not a hardcoded number), clears `_inflight`, and the same `_process` frame's `_drain_queue()` resumes serving:
 
 ```json
 {
@@ -75,8 +75,8 @@ then clears the slot and keeps draining (REQ-A-12). Safe today (both tasks retur
 
 All verification runs against a real editor via the existing serialized integration harness (no GDScript unit framework exists in this repo); construction-level guarantees cover what can't be forced deterministically:
 
-- **Cap (new integration case, the key test):** write a tiny `godot_mcp/network/deferred_op_timeout_ms` (e.g. 100) into the fixture project's `project.godot` **before** the editor launches (settings persisted on disk pre-launch — no debounced-save race, per the #96 lesson). Call `import_assets`: the ~10-tick grace guarantees the task is still in flight when the cap fires. Assert the structured `deferred_op_timeout` error, then issue a follow-up op and assert it succeeds — the queue drained, no permanent wedge (REQ-A-12 acceptance).
-- **Grace path (instant scan):** bare `import_assets` with nothing to import completes promptly with `scan_completed: true` under a normal cap. This is existing long-ops behavior and must stay green; it now exercises the grace-expiry branch.
+- **Cap (new integration case, the key test):** write `godot_mcp/network/deferred_op_timeout_ms = 100` into the fixture project's `project.godot` **before** the editor launches (settings persisted on disk pre-launch — no debounced-save race, per the #96 lesson). Call `import_assets`: the 10-tick grace guarantees the task is still in flight when the 100 ms cap fires. Assert the structured `deferred_op_timeout` error, then issue a follow-up op and assert it succeeds — the queue drained, no permanent wedge (REQ-A-12 acceptance).
+- **Grace path (instant scan):** bare `import_assets` with nothing to import completes with `scan_completed: true` under the default cap, well inside the client's 30 s request timeout. This is existing long-ops behavior and must stay green; it now exercises the grace-expiry branch.
 - **Scan-start race:** not deterministically forcible against a real editor (the editor's flag timing can't be delayed from outside). Covered by construction — the gate makes premature completion impossible whenever the flag flips within grace — plus the existing long-ops suite staying green. The issue's "where feasible" caveat applies.
 - **Outcome guard:** not reachable end-to-end (both real tasks return well-formed outcomes); a three-line defensive branch verified by review. No test.
 - **Regression:** the full existing long-ops integration suite runs unchanged and must stay green (explicit acceptance criterion).
