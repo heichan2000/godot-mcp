@@ -1,56 +1,68 @@
 # @cradial/godot-mcp
 
-An MCP (Model Context Protocol) server that bridges AI agents to the [Godot 4](https://godotengine.org/) game engine over stdio. Point an MCP-capable client (Claude Desktop, Claude Code, Cursor, Cline, ...) at it and the agent gets 19 tools to open, edit, run, and inspect a Godot 4 project — including a real write-then-read-back verify loop, so it can confirm a change actually landed instead of guessing.
+An MCP (Model Context Protocol) server that connects AI agents to the [Godot 4](https://godotengine.org/) **editor**. A small bridge addon runs inside the editor you already have open; the server talks to it over a loopback WebSocket and exposes 29 tools to scaffold projects, author scenes node-by-node, read everything back, run the game, and tail its output — all inside the live editor, with the editor's own undo history (Ctrl+Z reverts agent edits like any other edit).
 
-- **stdio-only** transport, MIT-licensed, published as an `npx`-runnable package.
-- Requires **Node.js >= 20** and a **Godot 4.x** executable installed separately (this package does not bundle Godot itself).
-- No telemetry. Nothing leaves your machine except what you point it at.
+- **stdio-only** MCP transport, MIT-licensed, published as an `npx`-runnable package.
+- Requires **Node.js >= 20** and the **Godot 4.x editor** (this package does not bundle Godot itself).
+- **You launch Godot yourself, from anywhere.** The server never starts, locates, or manages the Godot executable — it only connects to the editor you opened. A bare `Godot_v4.x-stable_win64.exe` in your Downloads folder works exactly as well as a system install.
+- No telemetry. The only network endpoint in the whole system is the addon's bridge, bound to `127.0.0.1` — nothing leaves your machine (enforced by standing CI audits, not just policy).
+
+> **Version note:** this branch is **v2 (addon-first), in alpha**. The npm `latest` tag is still the 1.x line — a different, headless architecture that spawns Godot per call. The 2.0 alpha ships on the `next` dist-tag. **Need headless/CI usage without an open editor? Stay on `@cradial/godot-mcp@1.x`.**
 
 ## Table of contents
 
+- [How it works](#how-it-works)
 - [Quickstart](#quickstart)
 - [Per-client setup](#per-client-setup)
-  - [Claude Desktop](#claude-desktop)
-  - [Cursor](#cursor)
-  - [Cline](#cline)
-  - [Local development (no npm registry)](#local-development-no-npm-registry)
 - [The sample project](#the-sample-project)
-- [Tool reference](#tool-reference)
-  - [Editor & version](#editor--version)
-  - [Project management](#project-management)
-  - [Running & debugging](#running--debugging)
-  - [Scene authoring](#scene-authoring)
-  - [Resource UIDs (Godot >= 4.4)](#resource-uids-godot--44)
-  - [Read-back / verification](#read-back--verification)
+- [Tool overview](#tool-overview)
 - [Value encoding](#value-encoding)
 - [Error shape](#error-shape)
 - [Configuration reference](#configuration-reference)
 - [Security & least privilege](#security--least-privilege)
 - [License](#license)
 
+## How it works
+
+Two pieces, connected over loopback:
+
+1. **The MCP server** (this package, Node.js) — registered with your MCP client, speaks MCP over stdio on one side and the bridge protocol on the other.
+2. **The bridge addon** (`addons/godot_mcp`, bundled inside this package) — an editor plugin that listens on `127.0.0.1:6510` and executes operations inside the editor: real `EditorInterface` scene edits, real undo history, real play sessions.
+
+The server installs the addon into your project for you (the `install_addon` tool copies the bundled files — no separate download). When the editor with the enabled plugin is open, the bridge connects automatically and reconnects automatically if either side restarts. When no editor is open, every editor tool returns a structured error telling you exactly how to get connected — nothing hangs.
+
+Because the _editor_ does the work, the server never needs to know where your Godot executable is. There is no `GODOT_PATH` to configure.
+
 ## Quickstart
 
-You need a Godot 4.x executable on the machine already ([download](https://godotengine.org/download)). The server finds it via, in order: an explicit `GODOT_PATH`, then a short list of common per-OS install locations. If it can't find one, every tool call that needs Godot returns a structured error telling you what it checked and how to fix it — it never silently falls back to a wrong binary.
-
-Register the server with a single command (this example uses the Claude Code CLI; see [per-client setup](#per-client-setup) for other clients):
+Until the 2.0 alpha is published on npm, run the server from a clone:
 
 ```bash
-claude mcp add godot -- npx @cradial/godot-mcp
+git clone https://github.com/heichan2000/godot-mcp.git
+cd godot-mcp
+npm install
+npm run build
 ```
 
-Then, from the agent, call `get_godot_version` with no arguments — it should return a `4.x.y` version string. That confirms the server is running and Godot resolution works.
+Register it (this example uses the Claude Code CLI; see [per-client setup](#per-client-setup) for other clients):
 
-From there, [`examples/sample-project`](examples/sample-project) is a minimal Godot 4 project you can point tools at right away to try the rest of the toolset, for example:
+```bash
+claude mcp add godot -- node /absolute/path/to/godot-mcp/dist/index.js
+```
 
-1. `get_godot_version` — confirm Godot resolves.
-2. `create_scene` with `project_path` set to your checkout's `examples/sample-project` and a new `scene_path` like `scenes/demo.tscn`.
-3. `get_scene_tree` on that same scene — see the root node you just created.
-4. `add_node` to attach a child node (try a `properties` value like `{"position": "Vector2(100, 50)"}`).
-5. `get_scene_tree` again, then `read_node_properties` on the new node — confirm the position round-trips as the same string.
+Then, from the agent:
+
+1. **`create_project`** with a path to a new/empty folder — scaffolds a valid Godot 4 project with the addon already installed. (Have an existing project instead? Call **`install_addon`** on it.)
+2. Open the project in the Godot editor (double-click your Godot executable, wherever it lives, and import/open the folder).
+3. Enable **"Godot MCP"** under **Project → Project Settings → Plugins**. The bridge starts immediately.
+4. **`bridge_status`** — should report the connection, the editor's Godot version, and the project path. You're live.
+5. Try the loop: `create_scene` → `add_node` (e.g. `properties: {"position": "Vector2(100, 50)"}`) → `get_scene_tree` → `read_node_properties` — the position reads back as the same string you wrote. Press Ctrl+Z in the editor and the node is gone.
+
+Once the alpha is on npm, step one becomes `npx @cradial/godot-mcp@next` with no clone needed — watch the releases.
 
 ## Per-client setup
 
-Every client below launches the same command: `npx @cradial/godot-mcp`. Set `GODOT_PATH` in the server's env if autodetection won't find your Godot install (see [configuration reference](#configuration-reference)).
+Every client launches the same command. No environment variables are required.
 
 ### Claude Desktop
 
@@ -60,11 +72,8 @@ Edit your `claude_desktop_config.json` ([location varies by OS](https://modelcon
 {
   "mcpServers": {
     "godot": {
-      "command": "npx",
-      "args": ["-y", "@cradial/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/your/godot"
-      }
+      "command": "node",
+      "args": ["/absolute/path/to/godot-mcp/dist/index.js"]
     }
   }
 }
@@ -80,11 +89,8 @@ Add to `.cursor/mcp.json` (project-local) or Cursor's global MCP settings:
 {
   "mcpServers": {
     "godot": {
-      "command": "npx",
-      "args": ["-y", "@cradial/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/your/godot"
-      }
+      "command": "node",
+      "args": ["/absolute/path/to/godot-mcp/dist/index.js"]
     }
   }
 }
@@ -98,11 +104,8 @@ In Cline's MCP settings (VS Code: `cline_mcp_settings.json`, reachable from Clin
 {
   "mcpServers": {
     "godot": {
-      "command": "npx",
-      "args": ["-y", "@cradial/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/your/godot"
-      },
+      "command": "node",
+      "args": ["/absolute/path/to/godot-mcp/dist/index.js"],
       "disabled": false,
       "autoApprove": []
     }
@@ -110,110 +113,48 @@ In Cline's MCP settings (VS Code: `cline_mcp_settings.json`, reachable from Clin
 }
 ```
 
-### Local development (no npm registry)
-
-Working from a clone instead of the published package:
-
-```bash
-git clone https://github.com/heichan2000/godot-mcp.git
-cd godot-mcp
-npm install
-npm run build
-```
-
-Then point any client's `command`/`args` at the built entrypoint directly instead of `npx`:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "node",
-      "args": ["/absolute/path/to/godot-mcp/dist/index.js"],
-      "env": {
-        "GODOT_PATH": "/path/to/your/godot"
-      }
-    }
-  }
-}
-```
-
-Or with the Claude Code CLI: `claude mcp add godot -- node /absolute/path/to/godot-mcp/dist/index.js`.
+Once the 2.0 alpha is published, replace `"command": "node", "args": [".../dist/index.js"]` with `"command": "npx", "args": ["-y", "@cradial/godot-mcp@next"]` in any of the blocks above.
 
 ## The sample project
 
-[`examples/sample-project`](examples/sample-project) is a tiny Godot 4 project checked into this repo, used both by the integration test suite and as a safe, disposable playground for the quickstart above: a `project.godot`, a couple of scenes, a script, and one texture — enough to exercise every tool without risking a real project.
+[`examples/sample-project`](examples/sample-project) is a tiny Godot 4 project checked into this repo with the addon pre-enabled, used both by the integration test suite and as a safe, disposable playground: open it in the editor and every tool works on it immediately.
 
-## Tool reference
+## Tool overview
 
-All tool and parameter names are `snake_case`. `project_path` is an **absolute** path to the directory directly containing `project.godot`; every other path parameter is **relative to `project_path`** and is checked for containment before touching disk (see [Security & least privilege](#security--least-privilege)) — absolute paths, `..` segments, and symlink/junction escapes are all rejected with a structured error, not silently normalized.
+All tool and parameter names are `snake_case`. Editor tools operate on **the project open in the connected editor**; file paths are `res://`-relative and are containment-checked at **both** layers (server and addon, independently) before touching anything — absolute paths, `..` traversal, and symlink escapes are rejected with a structured error, never silently normalized.
 
-### Editor & version
+_A generated per-tool reference (parameters and result shapes) ships with the 2.0 release; until then, tool descriptions are always available live via your MCP client's tool listing._
 
-| Tool                | Parameters     | Behavior                                                                                                                                                                                 |
-| ------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_godot_version` | _(none)_       | Returns the version string reported by the resolved Godot 4.x executable (`--version`), re-probed fresh on every call.                                                                   |
-| `launch_editor`     | `project_path` | Opens the Godot editor GUI for the project, detached from this server's own process — the editor keeps running after the server exits. Returns immediately once the process has started. |
+**Bridge & versions** — `bridge_status` (connection state, handshake info, op queue depth), `get_godot_version` (editor + addon + server versions), `get_bridge_log` (recent bridge traffic for diagnosing connection issues).
 
-### Project management
+**Onboarding** — `create_project` (scaffold a new Godot 4 project into an empty/new folder, addon included), `install_addon` (install/update the bundled bridge addon into an existing project and report the enable steps). These two are the bootstrap exceptions: they work with no editor connected, by writing files only.
 
-| Tool               | Parameters                              | Behavior                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `import_project`   | `project_path`                          | Runs `godot --headless --import` to (re)build the project's asset import cache. Required before any asset-dependent tool (e.g. `load_sprite`) can load a texture — those tools check for the cache first and point back here with a guided error rather than importing implicitly. Can be slow on large projects.                                                                                            |
-| `list_projects`    | `directory`, `recursive?`, `max_depth?` | Finds directories directly containing `project.godot` under `directory`. A bounded, depth-capped filesystem walk (default depth 3, hard ceiling regardless of what's requested) that always skips hidden/system directories (`.git`, `node_modules`, `AppData`, the OS recycle bin, ...) and caps the number of results returned — never a whole-disk search. Pure filesystem search; does not invoke Godot. |
-| `get_project_info` | `project_path`                          | Returns the project's name, engine version (from `project.godot`), and file/asset counts (bounded walk; large projects report a lower bound and flag it). Pure filesystem read; does not invoke Godot.                                                                                                                                                                                                       |
+**Project** — `list_projects` (find `project.godot` folders under a directory; bounded, depth-capped walk), `get_project_info` (name, engine version, main scene, autoloads, file counts), `list_resources` (every `res://` resource with path/type/uid, filterable), `import_assets` (import new/changed assets, or rescan the whole project).
 
-### Running & debugging
+**Scenes** — `create_scene`, `open_scene`, `get_open_scenes` (tabs + dirty flags), `save_scene` (in place, save-as, or all), `close_scene` (dirty-guarded), `get_scene_tree` (the live node tree, unsaved state included), `export_mesh_library` (scene meshes → `MeshLibrary` for GridMap).
 
-Godot runs are single-process: starting a new `run_project` replaces (and stops) whatever was already active, and its output buffer resets with it.
+**Nodes** — `add_node`, `remove_node` (returns a manifest of everything removed), `duplicate_node`, `move_node` (reparent/reorder), `rename_node`. Every mutation is registered with the editor's undo system — Ctrl+Z in the editor reverts it.
 
-| Tool               | Parameters                            | Behavior                                                                                                                                                                                                                                                                                    |
-| ------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_project`      | `project_path`, `scene?`, `headless?` | Runs the project (or a specific `.tscn` scene). **Windowed by default** (a visible Godot window opens); pass `headless: true` for a log-only run with no window (CI/agent use). Output is captured into a bounded ring buffer either way. Returns immediately once the process has started. |
-| `get_debug_output` | _(none)_                              | Returns `{ output: string[], errors: string[] }` (stdout/stderr, captured separately) from the active or most recently finished run, without disturbing it. Structured error if `run_project` hasn't been called yet, or its buffer was already cleared.                                    |
-| `stop_project`     | _(none)_                              | Kills the active run and returns its captured output tail as `{ output, errors }`, then clears the tracked process. Structured error if nothing is running.                                                                                                                                 |
+**Properties** — `read_node_properties` (stored non-default state by default, or specific named properties), `set_node_properties` (batch set; one undo step).
 
-### Scene authoring
+**Diagnostics** — `get_script_errors` (parse/compile diagnostics for one script or the whole project, from the editor's GDScript language server).
 
-| Tool                  | Parameters                                                                                 | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_scene`        | `project_path`, `scene_path`, `root_node_type?`                                            | Creates a new `.tscn` scene with a single root node (default `Node2D`). `scene_path` must not already exist.                                                                                                                                                                                                                                                                                                                                                                                             |
-| `add_node`            | `project_path`, `scene_path`, `node_type`, `node_name`, `parent_node_path?`, `properties?` | Adds a node under `parent_node_path` (the scene root when omitted) and saves the scene in place. `node_type` is validated against Godot's own ClassDB at call time (must exist, extend/be `Node`, and be directly instantiable) — no curated allow-list, but script classes, `res://` paths, and abstract/editor-only classes are rejected. `properties` sets values via `set()` using the [shared value encoding](#value-encoding); an unknown property name is a structured error, not a silent no-op. |
-| `load_sprite`         | `project_path`, `scene_path`, `node_path?`, `texture_path`                                 | Assigns a texture to a `Sprite2D`/`Sprite3D` node (the scene root when `node_path` is omitted) and saves the scene. Requires the project's import cache to already exist — returns a guided error naming `import_project` otherwise.                                                                                                                                                                                                                                                                     |
-| `save_scene`          | `project_path`, `scene_path`, `new_path?`                                                  | Re-saves `scene_path` in place, or performs a "save as" to `new_path` (which must not already exist) leaving the original untouched.                                                                                                                                                                                                                                                                                                                                                                     |
-| `export_mesh_library` | `project_path`, `scene_path`, `output_path`, `mesh_item_names?`                            | Exports every `MeshInstance3D` in the scene with an assigned mesh as one item in a new `MeshLibrary` resource at `output_path` (always overwritten). `mesh_item_names` optionally restricts the export to a named subset.                                                                                                                                                                                                                                                                                |
+**Run & debug** — `run_project` (play the main scene, current scene, or a named scene from the editor), `stop_project`, `get_debug_output` (cursor-based tail of the captured game output ring buffer).
 
-### Resource UIDs (Godot >= 4.4)
-
-These two tools are always listed, but every call is version-gated at request time against the resolved Godot's `--version` output — calling either on Godot < 4.4 returns a structured "requires Godot >= 4.4" error rather than the tool simply being hidden. This is distinct from `list_resources`' `uid` field below, which reflects a different, older mechanism for imported assets.
-
-| Tool                  | Parameters                  | Behavior                                                                                                                                                                                                                                                                                                        |
-| --------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_uid`             | `project_path`, `file_path` | Returns the `uid://...` already assigned to `file_path`. Requires the import cache to exist (like `load_sprite`). A resource authored before 4.4 (or never resaved since) may have no UID yet — run `update_project_uids` first if so.                                                                          |
-| `update_project_uids` | `project_path`              | Ensures every `.tscn`/`.tres` resource under the project has a `uid://` embedded in its header, generating one for any that lack it (existing UIDs are left untouched), then re-runs the import cache so the change is immediately visible. Returns which resources were touched, already had a UID, or failed. |
-
-### Read-back / verification
-
-The read-back tools close the write -> verify loop: after mutating a scene, an agent can confirm the change actually landed instead of trusting its own write call.
-
-| Tool                   | Parameters                                               | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `get_scene_tree`       | `project_path`, `scene_path`                             | Returns the scene's full node tree as nested `{ name, type, path, children[] }`. `path` is root-relative (`"."` for the root itself, e.g. `"Body/Hero"` for a nested node) and is directly reusable as `node_path`/`parent_node_path` input to other tools.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `read_node_properties` | `project_path`, `scene_path`, `node_path`, `properties?` | Without `properties`: returns only the properties actually stored in the `.tscn` for that node (its non-default state) — never the engine's ~40+ default properties. With `properties` (a list of names): fetches those specific named properties from the live node via `get()`, returned even if they still hold the class default. Values use the [shared encoding](#value-encoding), so a value `add_node` wrote as `"Vector2(100, 50)"` reads back as that identical string.                                                                                                                                                                                                                                              |
-| `get_script_errors`    | `project_path`, `scene_path?` \| `script_path?`          | Best-effort GDScript error read-back via `godot --check-only` (exactly one of `scene_path`/`script_path` required). Returns `{ errors: [{file, line, message}], raw }` — `errors` is a best-effort regex parse of Godot's stderr (Godot exposes no structured error API); `raw` always carries the full untouched stderr so a missed parse never loses information.                                                                                                                                                                                                                                                                                                                                                            |
-| `list_resources`       | `project_path`, `type?`                                  | Returns `{ resources: [{ path, type, uid? }] }` for every resource under the project (`res://`), for discovery before referencing one elsewhere. `type` optionally narrows to a class or any of its subclasses (e.g. `"Texture2D"` also matches an imported PNG's actual class `CompressedTexture2D`). `uid` is included only when Godot recognizes one for that resource: **imported assets (textures, etc.) have had resource UIDs since Godot 4.0** as long as the project has been imported at least once; scripts and scenes only get a UID through the `.uid`-sidecar mechanism added in **Godot 4.4** (`get_uid`/`update_project_uids`). Either way it's simply omitted, never an error, when no UID is recognized yet. |
+**Resource UIDs (Godot >= 4.4)** — `get_uid`, `update_project_uids`. Version-gated at call time against the connected editor's version: on an older editor they return a structured "requires Godot >= 4.4" error rather than disappearing.
 
 ## Value encoding
 
-Every non-trivial tool parameter and read-back result that carries a Godot value (`add_node`'s `properties`, `read_node_properties`'s results, ...) uses one symmetric encoding, in both directions:
+Every tool parameter and read-back result that carries a Godot value (`add_node`/`set_node_properties`' `properties`, `read_node_properties`' results, ...) uses one symmetric encoding, in both directions:
 
 - **JSON primitives** (`bool`, `int`/`float`, `string`) travel natively — a JSON `true`, `42`, or `"hello"` stays exactly that.
-- **Every other Godot type** (`Vector2`, `Color`, `NodePath`, `Rect2`, arrays, dictionaries, ...) travels as the text form Godot's own `var_to_str` produces and `str_to_var` parses back — e.g. `"Vector2(100, 50)"`, `"Color(1, 0, 0, 1)"`, `'NodePath("../Foo")'`. This is exactly the syntax already used inside `.tscn` files, so an agent that has read a scene already knows the encoding.
+- **Every other Godot type** (`Vector2`, `Color`, `NodePath`, `Rect2`, arrays, dictionaries, ...) travels as the text form Godot's own `var_to_str` produces and `str_to_var` parses back — e.g. `"Vector2(100, 50)"`, `"Color(1, 0, 0, 1)"`. This is exactly the syntax used inside `.tscn` files, so an agent that has read a scene already knows the encoding. A `res://` path assigned to a resource-typed property loads that resource.
 
-One caveat this trade-off accepts: a string value that happens to look like another Godot literal (e.g. the literal string `"true"` or `"123"`) decodes as that literal, not as a plain string, because decoding always tries `str_to_var` first. To send a literal string that would otherwise be ambiguous, quote it `var_to_str`-style (`"\"42\""` decodes to the string `"42"`), or prefer sending real JSON primitives for booleans/numbers in the first place.
+One caveat this trade-off accepts: a string value that happens to look like another Godot literal (e.g. the literal string `"true"` or `"123"`) decodes as that literal, not as a plain string. To send a literal string that would otherwise be ambiguous, quote it `var_to_str`-style (`"\"42\""` decodes to the string `"42"`), or prefer real JSON primitives for booleans/numbers in the first place.
 
 ## Error shape
 
-Every tool failure — a path containment violation, a missing Godot executable, an unrecognized node type, a dispatcher-reported operation error, a timeout — returns the same structured shape: an MCP `CallToolResult` with `isError: true`, human-readable text in `content` describing what went wrong plus a "Possible solutions" list, and the same data machine-readable in `structuredContent`:
+Every tool failure — editor not connected, a path containment violation, an unknown node type, a version-gated call, a timeout — returns the same structured shape: an MCP `CallToolResult` with `isError: true`, human-readable text in `content` describing what went wrong plus a "Possible solutions" list, and the same data machine-readable in `structuredContent`:
 
 ```json
 {
@@ -221,42 +162,44 @@ Every tool failure — a path containment violation, a missing Godot executable,
   "content": [
     {
       "type": "text",
-      "text": "Path \"../../etc/passwd\" resolves outside the project root \"...\".\n\nPossible solutions:\n- Remove any \"..\" segments so the resolved path stays inside project_path.\n- If the path passes through a symlink or junction, make sure the link target is inside project_path."
+      "text": "Path \"../../etc/passwd\" resolves outside the project root \"...\".\n\nPossible solutions:\n- Remove any \"..\" segments so the resolved path stays inside the project.\n- Pass a res:// path inside the project."
     }
   ],
   "structuredContent": {
     "message": "Path \"../../etc/passwd\" resolves outside the project root \"...\".",
     "possibleSolutions": [
-      "Remove any \"..\" segments so the resolved path stays inside project_path.",
-      "If the path passes through a symlink or junction, make sure the link target is inside project_path."
+      "Remove any \"..\" segments so the resolved path stays inside the project.",
+      "Pass a res:// path inside the project."
     ]
   }
 }
 ```
 
-`possibleSolutions` is always tailored to the specific failure (a stale import cache gets pointed at `import_project`; a bad node type gets pointed at the ClassDB rule; a hung process gets pointed at `DEBUG=1`), never a generic "something went wrong."
+`possibleSolutions` is always tailored to the specific failure (no editor connected points at `install_addon` and the Plugins checkbox; a bad node type points at the ClassDB rule; a stale connection points at `bridge_status`), never a generic "something went wrong."
 
 ## Configuration reference
 
-All configuration is via environment variables, read once at server startup.
+All configuration is via environment variables, read once at server startup. **None are required** — defaults work out of the box.
 
-| Key                   | Type | Default        | Purpose                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------- | ---- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GODOT_PATH`          | path | _(autodetect)_ | Explicit path to the Godot 4.x executable. When set, this is the **only** path tried — an invalid `GODOT_PATH` fails with a guided error rather than silently falling back to autodetection. When unset, the server searches a short list of common per-OS install locations (Program Files / Steam on Windows, `/Applications` and Homebrew on macOS, `/usr/bin`, snap, and Flatpak on Linux). |
-| `DEBUG`               | bool | `false`        | Enables verbose diagnostic logging to **stderr only** (stdout is reserved for the MCP stdio protocol and is never touched by this flag). Accepts `1`, `true`, `yes`, or `on` (case-insensitive); anything else is treated as false.                                                                                                                                                             |
-| `OUTPUT_BUFFER_LINES` | int  | `1000`         | Maximum number of lines retained per stream (stdout and stderr, tracked separately) in `run_project`'s ring buffer, read back via `get_debug_output`. Older lines are dropped once the cap is hit rather than growing memory unbounded. Falls back to the default for anything unset, unparseable, non-integer, or non-positive.                                                                |
+| Key                   | Type | Default | Purpose                                                                                                                                                                                                                             |
+| --------------------- | ---- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GODOT_MCP_PORT`      | int  | `6510`  | Loopback port the server dials to reach the editor bridge. Must match the addon's `godot_mcp/network/port` project setting if you change either side. Only needed when 6510 collides with something else on your machine.           |
+| `BRIDGE_TIMEOUT_MS`   | int  | `30000` | Per-operation bridge timeout. Long-running operations (imports, project-wide UID updates) extend it via progress frames, so the default is rarely worth touching.                                                                   |
+| `GODOT_MCP_LSP_PORT`  | int  | `6005`  | The editor's GDScript language-server port (`get_script_errors`' diagnostics source). Matches Godot's default; change it only if you changed it in Editor Settings → Network → Language Server.                                     |
+| `DEBUG`               | bool | `false` | Enables verbose diagnostic logging to **stderr only** (stdout is reserved for the MCP stdio protocol and is never touched by this flag). Accepts `1`, `true`, `yes`, or `on` (case-insensitive); anything else is treated as false. |
+| `OUTPUT_BUFFER_LINES` | int  | `1000`  | Maximum number of lines retained per stream (stdout and stderr, tracked separately) in the game-output ring buffer read back via `get_debug_output`. Older lines are dropped once the cap is hit rather than growing memory.        |
 
-> **No `STRICT_PATHS` toggle.** Early designs sketched a `STRICT_PATHS` env var to relax path containment for local development. It was deliberately not implemented: containment is always on, with no off switch (see [Security & least privilege](#security--least-privilege)). Setting `STRICT_PATHS` to anything has no effect.
+> **No `GODOT_PATH`.** The v2 server never launches or locates the Godot executable — you open the editor yourself, from wherever your Godot lives. (The 1.x headless line is the version that needs `GODOT_PATH`.)
 
 ## Security & least privilege
 
-- **Path containment is mandatory, not opt-in.** Every path parameter other than `project_path` itself is resolved relative to `project_path` and checked with a realpath-based containment algorithm before it ever touches the filesystem: the deepest _existing_ ancestor of the target is realpath'd (so a not-yet-created file, like a scene about to be created, is still handled), then the result must land strictly inside the project root. This is **not** a naive string-prefix (`startsWith`) check — those break under Windows case-insensitivity, 8.3 short names (`C:\PROGRA~1`), and UNC paths, and would also wrongly accept a sibling directory that merely shares a name prefix (`project` vs. `project-evil-twin`). An absolute path, a `..` traversal, or a symlink/junction that escapes the root is rejected with a structured error every time.
-- **Defense in depth at two layers.** The same containment rule is enforced both in the TypeScript tool layer _and_ independently inside the bundled `operations.gd` GDScript dispatcher before it touches any file — a bug or bypass in one layer doesn't remove the other.
-- **No shell, no injection.** Godot is always invoked via `execFile`/`spawn` with argument arrays; parameters cross into GDScript as JSON data on argv, never interpolated into a shell command string.
-- **Node-type allow-listing without a maintained list.** `add_node`'s `node_type` is validated against Godot's own `ClassDB` at call time (must exist, extend `Node`, and be directly instantiable) — it can never be a script class name or a `res://` resource path, and abstract/editor-only classes are rejected. Property values are decoded with `str_to_var` only, which can construct value types (vectors, colors, arrays, ...) but can never load a `Resource` or execute code.
-- **Bounded everything.** `list_projects`' filesystem walk is depth-capped and result-capped; `run_project`'s output capture is a bounded ring buffer. Neither a huge disk nor a noisy process run can exhaust memory or turn into an unbounded scan.
-- **Strict Godot resolution, no silent fallback.** An explicitly configured `GODOT_PATH` that doesn't resolve is a hard, guided failure — the server never quietly substitutes a different Godot binary than the one you asked for.
-- **Run this scoped to a projects directory, never as admin/root.** This server was designed to operate on Godot projects you already trust the agent to modify — it is not a sandbox against a malicious project. Run it as an unprivileged user, point `project_path` at a specific working directory (not `/` or `C:\`), and treat an agent with this tool available the same way you'd treat one with local filesystem write access, because that's what it has, scoped to whatever `project_path` you give it per call.
+- **The product never executes Godot.** Not headless, not shelled, not spawned — the server's only reach into the engine is the bridge to the editor _you_ opened, and `create_project`/`install_addon` write files only. There is no code path from a tool call to launching a process.
+- **No code-execution tool, by design and by CI.** There is no eval, no expression runner, no script executor. Operations dispatch through a fixed named-op table, and a standing CI audit fails any PR that adds a code-exec-shaped tool or op to either inventory.
+- **Path containment is mandatory at two independent layers.** Every path parameter is canonicalized and containment-checked in the TypeScript layer (realpath-based — robust against Windows case/8.3/UNC quirks and symlink escapes) before anything crosses the bridge, and the addon re-checks every path again before touching the editor filesystem. A bug in one layer doesn't remove the other; both layers are proven in isolation by standing test suites.
+- **Loopback-only, no telemetry — CI-enforced.** The addon's bridge binds `127.0.0.1` and refuses non-loopback connections (asserted at runtime in the integration suite); a static audit fails any PR that introduces an HTTP/UDP client, `fetch`, or a non-loopback socket anywhere in the addon or server.
+- **Node-type allow-listing without a maintained list.** `add_node`'s `node_type` is validated against Godot's own `ClassDB` at call time (must exist, extend `Node`, and be directly instantiable) — never a script class or a `res://` path. Property values decode via `str_to_var` (value types only — it cannot execute code), plus explicit resource loading for resource-typed properties.
+- **Bounded everything.** Directory walks are depth- and result-capped; the run-output capture is a bounded ring buffer; bridge operations execute strictly serially in arrival order, so concurrent agent calls cannot interleave into a corrupted scene.
+- **Run it as yourself, not as admin/root.** This server operates on projects you already trust the agent to modify — it is not a sandbox against a malicious project file. An agent with these tools has write access scoped to the connected project; treat it accordingly.
 
 ## License
 
