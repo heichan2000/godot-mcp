@@ -142,7 +142,7 @@ describe.runIf(hasGodot)("M1 exit demo: the §11 smoke loop walking all 19 §6.6
 
     const version = await callTool("get_godot_version");
     expect(version.isError).toBeFalsy();
-    expect(String(version.structuredContent!.godot_version)).toMatch(/^4\.\d+/);
+    expect(String(version.structuredContent!.godot_version_string)).toMatch(/^4\.\d+/);
     walk(1);
   });
 
