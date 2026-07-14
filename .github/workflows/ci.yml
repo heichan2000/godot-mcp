@@ -54,6 +54,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      # docs/tools.md is generated from the tool descriptors. Regenerate and
+      # fail if it differs from what's committed, so the reference can never
+      # drift from the code (#77, §10). Ubuntu-only: the generator writes LF
+      # and the Windows checkout may carry CRLF, which would false-positive.
+      - name: Tool reference in sync (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm run docs:tools
+          git diff --exit-code docs/tools.md
+
   integration:
     name: integration (ubuntu, Godot ${{ matrix.godot_version }} editor under xvfb)
     strategy:

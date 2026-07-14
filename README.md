@@ -123,7 +123,7 @@ Once the 2.0 alpha is published, replace `"command": "node", "args": [".../dist/
 
 All tool and parameter names are `snake_case`. Editor tools operate on **the project open in the connected editor**; file paths are `res://`-relative and are containment-checked at **both** layers (server and addon, independently) before touching anything — absolute paths, `..` traversal, and symlink escapes are rejected with a structured error, never silently normalized.
 
-_A generated per-tool reference (parameters and result shapes) ships with the 2.0 release; until then, tool descriptions are always available live via your MCP client's tool listing._
+_A generated [per-tool reference](docs/tools.md) — every tool's parameters, grouped by domain — is produced from the descriptors by `npm run docs:tools`. Tool descriptions are also available live via your MCP client's tool listing._
 
 **Bridge & versions** — `bridge_status` (connection state, handshake info, op queue depth), `get_godot_version` (editor + addon + server versions), `get_bridge_log` (recent bridge traffic for diagnosing connection issues).
 

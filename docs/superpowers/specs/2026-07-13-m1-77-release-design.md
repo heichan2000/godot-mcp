@@ -5,7 +5,7 @@
 ## Context
 
 #77 is the M1 closing slice. Most of its acceptance criteria were delivered by
-earlier issues and only need to be *demonstrated* here:
+earlier issues and only need to be _demonstrated_ here:
 
 - **CI matrix (REQ-A-07)** — done in #71/#96: unit on ubuntu + windows,
   integration on ubuntu × Godot 4.6/4.7 under xvfb, editor logs on failure.
@@ -73,7 +73,7 @@ process.
   edit; run `npm run docs:tools`". The script always writes LF.
 - **Drift gate:** a step in the CI unit job, **ubuntu leg only** (sidesteps
   CRLF noise on windows): `npm run docs:tools && git diff --exit-code
-  docs/tools.md`.
+docs/tools.md`.
 - A unit test asserts the generator runs clean against the current
   inventory, so the ubuntu-only CI step is not the first place it can break.
 - README gains one link to `docs/tools.md` (small edit on main after #100
@@ -139,13 +139,13 @@ existing suites (`isError: true`, `possibleSolutions[]`).
 
 ## Acceptance criteria → components
 
-| #77 criterion | Covered by |
-|---|---|
-| `2.0.0-alpha.x` on `next`; `latest` stays 1.x; addon bundled; startup verifies payload | Components 1 + 4 |
-| CI green on fresh clone across the matrix | Already done (#71/#96); re-verified at release time (Component 4 step 1) |
-| All 19 §6.6 parity rows pass in the scripted walk | Component 3 ledger |
-| §11 smoke loop end-to-end incl. undo + kill-editor/reconnect | Component 3 narrative |
-| README v2 + per-client setup + generated tool reference + headless→1.x pointer | PR #100 (merged first) + Component 2 |
+| #77 criterion                                                                          | Covered by                                                               |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `2.0.0-alpha.x` on `next`; `latest` stays 1.x; addon bundled; startup verifies payload | Components 1 + 4                                                         |
+| CI green on fresh clone across the matrix                                              | Already done (#71/#96); re-verified at release time (Component 4 step 1) |
+| All 19 §6.6 parity rows pass in the scripted walk                                      | Component 3 ledger                                                       |
+| §11 smoke loop end-to-end incl. undo + kill-editor/reconnect                           | Component 3 narrative                                                    |
+| README v2 + per-client setup + generated tool reference + headless→1.x pointer         | PR #100 (merged first) + Component 2                                     |
 
 ## Testing summary
 

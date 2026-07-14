@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -28,29 +28,62 @@ export interface ServerDeps {
   outputBufferLines?: number;
 }
 
+/** One labeled domain of tools, in the order the generated reference lists them. */
+export interface ToolGroup {
+  /** Human-facing domain heading in docs/tools.md. */
+  title: string;
+  tools: ToolDescriptor[];
+}
+
+/**
+ * The complete tool inventory as labeled domains, in registration order.
+ * `buildToolInventory` flattens this, so the generated reference and the
+ * registered server can never list a different set (the tool-docs unit test
+ * asserts the flatten equality). Exported so scripts/generate-tool-docs.ts
+ * can render per-domain tables.
+ */
+export function buildToolGroups(deps: ServerDeps): ToolGroup[] {
+  return [
+    {
+      title: "Bridge & versions",
+      tools: createBridgeTools({ bridge: deps.bridge, serverVersion: SERVER_VERSION }),
+    },
+    {
+      title: "Onboarding",
+      tools: createOnboardingTools({
+        serverVersion: SERVER_VERSION,
+        bundledAddonDir: resolveBundledAddonDir(),
+      }),
+    },
+    { title: "Project & filesystem", tools: createProjectTools({ bridge: deps.bridge }) },
+    { title: "Resource UIDs", tools: createUidTools({ bridge: deps.bridge }) },
+    { title: "Scenes", tools: createSceneTools({ bridge: deps.bridge }) },
+    { title: "Nodes", tools: createNodeTools({ bridge: deps.bridge }) },
+    { title: "Properties", tools: createPropertyTools({ bridge: deps.bridge }) },
+    {
+      title: "Diagnostics",
+      tools: createDiagnosticsTools({
+        bridge: deps.bridge,
+        lspPort: deps.lspPort ?? DEFAULT_LSP_PORT,
+      }),
+    },
+    {
+      title: "Run & debug",
+      tools: createRunTools({
+        bridge: deps.bridge,
+        outputBufferLines: deps.outputBufferLines ?? DEFAULT_OUTPUT_BUFFER_LINES,
+      }),
+    },
+  ];
+}
+
 /**
  * The complete tool inventory, in registration order. Exported (rather than
  * inlined in createServer) so the REQ-A-05 naming lint and the REQ-M-03
  * code-exec audit (#76) can walk exactly what ships, with a stub bridge.
  */
 export function buildToolInventory(deps: ServerDeps): ToolDescriptor[] {
-  return [
-    ...createBridgeTools({ bridge: deps.bridge, serverVersion: SERVER_VERSION }),
-    ...createOnboardingTools({
-      serverVersion: SERVER_VERSION,
-      bundledAddonDir: resolveBundledAddonDir(),
-    }),
-    ...createProjectTools({ bridge: deps.bridge }),
-    ...createUidTools({ bridge: deps.bridge }),
-    ...createSceneTools({ bridge: deps.bridge }),
-    ...createNodeTools({ bridge: deps.bridge }),
-    ...createPropertyTools({ bridge: deps.bridge }),
-    ...createDiagnosticsTools({ bridge: deps.bridge, lspPort: deps.lspPort ?? DEFAULT_LSP_PORT }),
-    ...createRunTools({
-      bridge: deps.bridge,
-      outputBufferLines: deps.outputBufferLines ?? DEFAULT_OUTPUT_BUFFER_LINES,
-    }),
-  ];
+  return buildToolGroups(deps).flatMap((group) => group.tools);
 }
 
 /** Builds the MCP server and registers every tool. Pure wiring; never touches the network itself. */
@@ -93,6 +126,29 @@ export function resolveBundledAddonDir(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "addon", "godot_mcp");
 }
 
+/**
+ * Confirms the bundled GDScript addon shipped alongside the build. The
+ * successor of 1.0's operations.gd presence check: a broken/`files`-less
+ * install has no addon to install into a project, so we fail loudly at
+ * startup rather than at the first install_addon call. NOT DEBUG-gated -
+ * a corrupt package must always print. Returns false after reporting so the
+ * caller decides how to exit (kept as a seam for the unit test).
+ */
+export function verifyAddonPayload(
+  addonDir: string,
+  deps: { exists: (candidate: string) => boolean; onMissing: (message: string) => void },
+): boolean {
+  const required = ["plugin.cfg", "server.gd"];
+  const missing = required.filter((file) => !deps.exists(path.join(addonDir, file)));
+  if (missing.length === 0) return true;
+  deps.onMissing(
+    `Bundled Godot addon payload is missing or incomplete at ${addonDir} ` +
+      `(missing: ${missing.join(", ")}). The npm package is corrupt or was built ` +
+      `without the addon. Reinstall with: npm install @cradial/godot-mcp@next`,
+  );
+  return false;
+}
+
 /** Starts the server over stdio. Logs (stderr only) are gated by DEBUG (REQ-A-09/M-07). */
 export async function main(): Promise<void> {
   const config = loadConfig();
@@ -101,6 +157,12 @@ export async function main(): Promise<void> {
   };
 
   debugLog("starting stdio MCP server (v2 bridge mode)");
+
+  const addonOk = verifyAddonPayload(resolveBundledAddonDir(), {
+    exists: existsSync,
+    onMissing: (message) => console.error(`[godot-mcp] ${message}`),
+  });
+  if (!addonOk) process.exit(1);
 
   const bridge = new BridgeConnection({
     url: `ws://127.0.0.1:${config.bridgePort}`,
