@@ -81,9 +81,16 @@ func _count_files(dir: EditorFileSystemDirectory, tally: Dictionary) -> void:
 func _op_list_resources(params: Dictionary) -> Dictionary:
 	var filter_type := str(params.get("type", ""))
 	var filter_dir := str(params.get("directory", ""))
+	if filter_dir != "":
+		# Addon-side containment (REQ-M-01, #76): the filter is a res:// prefix.
+		filter_dir = _scene_res_path(filter_dir)
+		if filter_dir == "":
+			return _err("path_escape", "directory is not a valid in-project res:// path.", [
+				"Pass a res:// directory inside the project, with no .. segments.",
+			])
 	var out: Array = []
 	_collect_resources(EditorInterface.get_resource_filesystem().get_filesystem(), filter_type, filter_dir, out)
-	return {"resources": out, "count": out.size()}
+	return {"result": {"resources": out, "count": out.size()}}
 
 
 func _collect_resources(dir: EditorFileSystemDirectory, filter_type: String, filter_dir: String, out: Array) -> void:
@@ -125,7 +132,14 @@ func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
 	var paths := PackedStringArray()
 	if raw is Array:
 		for entry in raw:
-			paths.append(str(entry))
+			# Addon-side containment (REQ-M-01, #76): reject the whole batch on
+			# the first escaping entry - never partially import.
+			var res_path := _scene_res_path(str(entry))
+			if res_path == "":
+				return _err("path_escape", "paths must be res:// paths inside the project.", [
+					"Pass res:// paths inside the project, with no .. segments.",
+				])
+			paths.append(res_path)
 	if paths.is_empty():
 		fs.scan()
 		return {"task": DeferredScanTask.new(server, id, fs, "scan", {
@@ -149,7 +163,13 @@ func _op_import_assets(params: Dictionary, id: Variant) -> Dictionary:
 ## header has no registered UID until update_project_uids resaves it - that
 ## case is a guided no_uid error, exactly 1.0's contract.
 func _op_get_uid(params: Dictionary) -> Dictionary:
-	var res_path := str(params.get("path", ""))
+	# Addon-side containment (REQ-M-01, #76): reject before ANY FileAccess call -
+	# an uncontained absolute path would probe the host filesystem's existence.
+	var res_path := _scene_res_path(str(params.get("path", "")))
+	if res_path == "":
+		return _err("path_escape", "path is not a valid in-project res:// path.", [
+			"Pass a res:// path inside the project, with no .. segments.",
+		])
 	if not FileAccess.file_exists(res_path):
 		return {"error": {
 			"code": "file_not_found",

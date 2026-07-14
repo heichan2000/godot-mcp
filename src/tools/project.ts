@@ -5,7 +5,7 @@ import { createErrorResponse } from "../errors.js";
 import type { ToolDescriptor } from "../registry.js";
 import { GodotVersionSchema } from "../bridge/protocol.js";
 import type { BridgePort } from "./bridge.js";
-import { bridgeErrorToResponse, requestValidated } from "./bridge.js";
+import { bridgeErrorToResponse, requestValidated, resolveProjectPath } from "./bridge.js";
 import { successResult } from "./result.js";
 
 export interface ProjectToolsDeps {
@@ -209,7 +209,11 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
       const { type, directory } = args as { type?: string; directory?: string };
       const params: Record<string, unknown> = {};
       if (type !== undefined) params.type = type;
-      if (directory !== undefined) params.directory = directory;
+      if (directory !== undefined) {
+        const contained = resolveProjectPath(deps.bridge, directory);
+        if ("error" in contained) return contained.error;
+        params.directory = contained.resPath;
+      }
       try {
         const listing = await requestValidated(
           deps.bridge,
@@ -239,7 +243,15 @@ export function createProjectTools(deps: ProjectToolsDeps): ToolDescriptor[] {
     handler: async (args) => {
       const { paths } = args as { paths?: string[] };
       const params: Record<string, unknown> = {};
-      if (paths !== undefined) params.paths = paths;
+      if (paths !== undefined) {
+        const containedPaths: string[] = [];
+        for (const rawPath of paths) {
+          const contained = resolveProjectPath(deps.bridge, rawPath);
+          if ("error" in contained) return contained.error;
+          containedPaths.push(contained.resPath);
+        }
+        params.paths = containedPaths;
+      }
       try {
         const outcome = await requestValidated(
           deps.bridge,
