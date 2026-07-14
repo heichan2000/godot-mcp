@@ -30,6 +30,7 @@
   },
   "files": [
     "dist",
+    "addon",
     "README.md",
     "LICENSE"
   ],

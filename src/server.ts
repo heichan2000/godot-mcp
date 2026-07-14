@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -93,6 +93,29 @@ export function resolveBundledAddonDir(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "addon", "godot_mcp");
 }
 
+/**
+ * Confirms the bundled GDScript addon shipped alongside the build. The
+ * successor of 1.0's operations.gd presence check: a broken/`files`-less
+ * install has no addon to install into a project, so we fail loudly at
+ * startup rather than at the first install_addon call. NOT DEBUG-gated -
+ * a corrupt package must always print. Returns false after reporting so the
+ * caller decides how to exit (kept as a seam for the unit test).
+ */
+export function verifyAddonPayload(
+  addonDir: string,
+  deps: { exists: (candidate: string) => boolean; onMissing: (message: string) => void },
+): boolean {
+  const required = ["plugin.cfg", "server.gd"];
+  const missing = required.filter((file) => !deps.exists(path.join(addonDir, file)));
+  if (missing.length === 0) return true;
+  deps.onMissing(
+    `Bundled Godot addon payload is missing or incomplete at ${addonDir} ` +
+      `(missing: ${missing.join(", ")}). The npm package is corrupt or was built ` +
+      `without the addon. Reinstall with: npm install @cradial/godot-mcp@next`,
+  );
+  return false;
+}
+
 /** Starts the server over stdio. Logs (stderr only) are gated by DEBUG (REQ-A-09/M-07). */
 export async function main(): Promise<void> {
   const config = loadConfig();
@@ -101,6 +124,12 @@ export async function main(): Promise<void> {
   };
 
   debugLog("starting stdio MCP server (v2 bridge mode)");
+
+  const addonOk = verifyAddonPayload(resolveBundledAddonDir(), {
+    exists: existsSync,
+    onMissing: (message) => console.error(`[godot-mcp] ${message}`),
+  });
+  if (!addonOk) process.exit(1);
 
   const bridge = new BridgeConnection({
     url: `ws://127.0.0.1:${config.bridgePort}`,
