@@ -111,7 +111,7 @@ jobs:
 
       - name: Upload editor session logs (failures only)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: editor-logs-godot-${{ matrix.godot_version }}
           path: ${{ runner.temp }}/godot-editor-logs
