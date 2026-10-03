@@ -53,13 +53,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "ws": "^8.21.0",
+    "ws": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^20.19.0",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.4",
     "prettier": "^3.9.5",
